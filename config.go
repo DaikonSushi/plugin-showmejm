@@ -31,7 +31,7 @@ type Config struct {
 // DefaultConfig returns default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		BaseDir:            "./jmDownload", // Local download path
+		BaseDir:            "/shared-data/jmDownload", // Shared directory with napcat container
 		BatchSize:          20,
 		PDFMaxPages:        200,
 		AutoFindJM:         true,
