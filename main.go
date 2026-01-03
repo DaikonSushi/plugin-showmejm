@@ -68,8 +68,18 @@ func (p *ShowMeJMPlugin) OnMessage(ctx context.Context, bot *pluginsdk.BotClient
 	// Auto-find JM numbers in message
 	if p.config.AutoFindJM {
 		text := msg.Text
+		// Remove CQ codes (e.g., [CQ:face,id=344,...]) to avoid false triggers from emojis/images
+		text = regexp.MustCompile(`\[CQ:[^\]]+\]`).ReplaceAllString(text, "")
+		// Remove HTML entities (e.g., &#91; &#93;)
+		text = regexp.MustCompile(`&#\d+;`).ReplaceAllString(text, "")
 		// Remove @ mentions
 		text = regexp.MustCompile(`@\S+\s*`).ReplaceAllString(text, "")
+
+		// Skip if text is empty after filtering
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return false
+		}
 
 		// Find all numbers and concatenate
 		numbers := regexp.MustCompile(`\d+`).FindAllString(text, -1)

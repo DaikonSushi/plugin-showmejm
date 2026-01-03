@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/draw"
 	_ "image/gif"
 	"image/jpeg"
 	_ "image/png"
@@ -94,36 +95,86 @@ func (p *PDFGenerator) createSinglePDF(pdfPath string, images []DownloadedImage)
 	pdf := gopdf.GoPdf{}
 	pdf.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4})
 
+	// Track temp files for cleanup at the end
+	var tempFiles []string
+	defer func() {
+		for _, tf := range tempFiles {
+			os.Remove(tf)
+		}
+	}()
+
 	// Process images
 	for _, img := range images {
+		var imagePath string
+		var needCompress bool = p.config.ImageQuality > 0 && p.config.ImageQuality < 100
+
+		// Read original image data - we always need this for normalization
 		var imgData []byte
 		var err error
-
-		// Read image data if not already loaded
 		if len(img.Data) > 0 {
 			imgData = img.Data
 		} else {
 			imgData, err = os.ReadFile(img.Path)
 			if err != nil {
-				return fmt.Errorf("failed to read image %s: %w", img.Path, err)
+				// Skip this image if can't read
+				continue
 			}
 		}
 
-		// Compress image if quality is configured
-		if p.config.ImageQuality > 0 && p.config.ImageQuality < 100 {
-			imgData, err = p.compressImage(imgData, p.config.ImageQuality)
+		if needCompress {
+			// Compress image (also normalizes color space)
+			compressedData, err := p.compressImage(imgData, p.config.ImageQuality)
 			if err != nil {
-				// If compression fails, use original image
-				if len(img.Data) > 0 {
-					imgData = img.Data
+				// If compression fails, try normalization only
+				normalizedData, normErr := p.normalizeImage(imgData)
+				if normErr != nil {
+					// If normalization also fails, use original path
+					imagePath = img.Path
 				} else {
-					imgData, _ = os.ReadFile(img.Path)
+					tempFile := img.Path + ".normalized.jpg"
+					if writeErr := os.WriteFile(tempFile, normalizedData, 0644); writeErr != nil {
+						imagePath = img.Path
+					} else {
+						imagePath = tempFile
+						tempFiles = append(tempFiles, tempFile)
+					}
+				}
+			} else {
+				// Write compressed data to temp file
+				tempFile := img.Path + ".compressed.jpg"
+				if writeErr := os.WriteFile(tempFile, compressedData, 0644); writeErr != nil {
+					// If write fails, use original path
+					imagePath = img.Path
+				} else {
+					imagePath = tempFile
+					tempFiles = append(tempFiles, tempFile)
+				}
+			}
+		} else {
+			// Even without compression, normalize the image to fix color space issues
+			normalizedData, err := p.normalizeImage(imgData)
+			if err != nil {
+				// If normalization fails, use original path
+				imagePath = img.Path
+			} else {
+				tempFile := img.Path + ".normalized.jpg"
+				if writeErr := os.WriteFile(tempFile, normalizedData, 0644); writeErr != nil {
+					imagePath = img.Path
+				} else {
+					imagePath = tempFile
+					tempFiles = append(tempFiles, tempFile)
 				}
 			}
 		}
 
-		// Decode image to get dimensions
-		imgConfig, _, err := image.DecodeConfig(bytes.NewReader(imgData))
+		// Read image file to get dimensions
+		imgFile, err := os.Open(imagePath)
+		if err != nil {
+			continue
+		}
+
+		imgConfig, _, err := image.DecodeConfig(imgFile)
+		imgFile.Close()
 		if err != nil {
 			// Skip images that can't be decoded
 			continue
@@ -161,42 +212,11 @@ func (p *PDFGenerator) createSinglePDF(pdfPath string, images []DownloadedImage)
 			PageSize: &gopdf.Rect{W: pageWidth, H: pageHeight},
 		})
 
-		// Add image from file path or compressed data
-		var imagePath string
-		var tempFile string
-
-		// If image was compressed, use temp file
-		if p.config.ImageQuality > 0 && p.config.ImageQuality < 100 {
-			tempFile = img.Path + ".compressed.jpg"
-			if writeErr := os.WriteFile(tempFile, imgData, 0644); writeErr == nil {
-				imagePath = tempFile
-			} else {
-				imagePath = img.Path
-			}
-		} else {
-			imagePath = img.Path
-		}
-
+		// Add image to PDF
 		err = pdf.Image(imagePath, 0, 0, &gopdf.Rect{W: pageWidth, H: pageHeight})
 		if err != nil {
-			// Try to save the image data to a temp file and use that
-			tempPath := img.Path + ".temp.jpg"
-			if writeErr := os.WriteFile(tempPath, imgData, 0644); writeErr == nil {
-				err = pdf.Image(tempPath, 0, 0, &gopdf.Rect{W: pageWidth, H: pageHeight})
-				os.Remove(tempPath)
-			}
-			if err != nil {
-				// Skip this image if it still fails
-				if tempFile != "" {
-					os.Remove(tempFile)
-				}
-				continue
-			}
-		}
-
-		// Clean up temp file
-		if tempFile != "" {
-			os.Remove(tempFile)
+			// Skip this image if it fails
+			continue
 		}
 	}
 
@@ -209,6 +229,7 @@ func (p *PDFGenerator) createSinglePDF(pdfPath string, images []DownloadedImage)
 }
 
 // compressImage compresses image data to JPEG with specified quality
+// It also normalizes the color space to ensure compatibility with PDF generators
 func (p *PDFGenerator) compressImage(imgData []byte, quality int) ([]byte, error) {
 	// Decode the image
 	img, _, err := image.Decode(bytes.NewReader(imgData))
@@ -216,14 +237,26 @@ func (p *PDFGenerator) compressImage(imgData []byte, quality int) ([]byte, error
 		return nil, fmt.Errorf("failed to decode image: %w", err)
 	}
 
+	// Convert to RGBA to ensure standard color space
+	// This fixes images with missing or non-standard color spaces
+	bounds := img.Bounds()
+	rgbaImg := image.NewRGBA(bounds)
+	draw.Draw(rgbaImg, bounds, img, bounds.Min, draw.Src)
+
 	// Encode to JPEG with specified quality
 	var buf bytes.Buffer
-	err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality})
+	err = jpeg.Encode(&buf, rgbaImg, &jpeg.Options{Quality: quality})
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode image: %w", err)
 	}
 
 	return buf.Bytes(), nil
+}
+
+// normalizeImage converts image to standard RGB color space without quality loss
+// This is used for images that don't need compression but may have color space issues
+func (p *PDFGenerator) normalizeImage(imgData []byte) ([]byte, error) {
+	return p.compressImage(imgData, 100) // Use maximum quality for normalization
 }
 
 // CreatePDFWithTitle creates a PDF with a title page
