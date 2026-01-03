@@ -99,8 +99,32 @@ func (p *ShowMeJMPlugin) OnCommand(ctx context.Context, bot *pluginsdk.BotClient
 		return true
 
 	case cmd == "jm" && len(args) > 0:
-		go p.downloadComic(ctx, bot, msg, args[0])
-		return true
+		// Handle subcommands first
+		switch strings.ToLower(args[0]) {
+		case "help", "帮助":
+			p.showHelp(bot, msg)
+			return true
+		case "domain", "域名":
+			if len(args) > 1 {
+				go p.setDomain(ctx, bot, msg, args[1])
+			} else {
+				bot.Reply(msg, pluginsdk.Text("📝 设置域名:\n格式: jm domain <域名>\n例: jm domain 18comic.vip\n\n当前域名: "+p.client.GetCurrentDomain()))
+			}
+			return true
+		case "check", "检查", "检测":
+			go p.updateDomains(ctx, bot, msg)
+			return true
+		case "clear", "清空":
+			p.clearDomains(ctx, bot, msg)
+			return true
+		case "更新域名":
+			go p.updateDomains(ctx, bot, msg)
+			return true
+		default:
+			// Treat as comic ID
+			go p.downloadComic(ctx, bot, msg, args[0])
+			return true
+		}
 
 	case strings.HasPrefix(cmd, "查jm"):
 		p.searchComic(ctx, bot, msg, args)
@@ -149,11 +173,10 @@ func (p *ShowMeJMPlugin) showHelp(bot *pluginsdk.BotClient, msg *pluginsdk.Messa
 3.🎲 下载随机本子:
 格式: 随机jm [关键词(可选)]
 
-4.🌐 寻找可用下载域名:
-格式: jm更新域名
-
-5.🗑️ 清除默认域名:
-格式: jm清空域名`
+4.🌐 域名管理:
+- jm check / jm更新域名 - 自动检测可用域名
+- jm domain <域名> - 手动设置域名
+- jm clear / jm清空域名 - 清除自定义域名`
 
 	if p.config.PDFPassword != "" {
 		helpText += "\n\n🔐 PDF密码：" + p.config.PDFPassword
@@ -345,6 +368,28 @@ func (p *ShowMeJMPlugin) updateDomains(ctx context.Context, bot *pluginsdk.BotCl
 func (p *ShowMeJMPlugin) clearDomains(ctx context.Context, bot *pluginsdk.BotClient, msg *pluginsdk.Message) {
 	p.client.ClearDomains()
 	bot.Reply(msg, pluginsdk.Text("🗑️ 已清空配置中的域名\n\n💡 插件将自动寻找可用域名\n对我说 'jm更新域名' 可以手动检测并添加可用域名"))
+}
+
+// setDomain manually sets a specific domain
+func (p *ShowMeJMPlugin) setDomain(ctx context.Context, bot *pluginsdk.BotClient, msg *pluginsdk.Message, domain string) {
+	// Clean domain input
+	domain = strings.TrimSpace(domain)
+	domain = strings.TrimPrefix(domain, "https://")
+	domain = strings.TrimPrefix(domain, "http://")
+	domain = strings.TrimSuffix(domain, "/")
+
+	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("🌐 正在测试域名 %s ...", domain)))
+
+	// Test the domain first
+	status := p.client.TestDomain(domain)
+	if status != "ok" {
+		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 域名 %s 连接失败，请检查域名是否正确", domain)))
+		return
+	}
+
+	// Update domain
+	p.client.UpdateDomains([]string{domain})
+	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ 已将域名设置为: %s", domain)))
 }
 
 func main() {

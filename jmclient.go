@@ -75,13 +75,16 @@ const (
 	SCRAMBLE_421926 = 421926 // 2023-02-08 changed image cutting algorithm
 )
 
-// Default JM domains
+// Default JM domains (updated from https://jmcmomic.github.io/go/)
 var defaultDomains = []string{
 	"18comic.vip",
-	"18comic.org",
-	"jmcomic.me",
-	"jmcomic1.me",
-	"jmcomic2.me",
+	"18comic.ink",
+	"jmcomic-zzz.org",
+	"jmcomic-zzz.one",
+	"jm18c-tcb.cc",
+	"jm18c-tcb.club",
+	"jm18c-uoi.cc",
+	"jm-3x.cc",
 }
 
 // Default image domains
@@ -617,7 +620,7 @@ func (c *JMClient) CheckDomains() (map[string]string, error) {
 				wg.Add(1)
 				go func(domain string) {
 					defer wg.Done()
-					status := c.testDomain(domain)
+					status := c.TestDomain(domain)
 					mu.Lock()
 					results[domain] = status
 					mu.Unlock()
@@ -670,8 +673,8 @@ func (c *JMClient) fetchDomainsFromGitHub() []string {
 	return domains
 }
 
-// testDomain tests if a domain is accessible
-func (c *JMClient) testDomain(domain string) string {
+// TestDomain tests if a domain is accessible
+func (c *JMClient) TestDomain(domain string) string {
 	testURL := fmt.Sprintf("https://%s", domain)
 	req, err := http.NewRequest("GET", testURL, nil)
 	if err != nil {
@@ -728,6 +731,16 @@ func (c *JMClient) ClearDomains() {
 	c.config.JMDomains = []string{}
 	configPath := "plugins-config/showmejm/config.json"
 	c.config.Save(configPath)
+}
+
+// GetCurrentDomain returns the current primary domain
+func (c *JMClient) GetCurrentDomain() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.domains) > 0 {
+		return c.domains[0]
+	}
+	return "(未配置)"
 }
 
 // DownloadImage downloads an image from URL
