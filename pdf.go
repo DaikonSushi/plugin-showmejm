@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"image"
 	_ "image/gif"
-	_ "image/jpeg"
+	"image/jpeg"
 	_ "image/png"
 	"os"
 	"path/filepath"
@@ -109,6 +109,19 @@ func (p *PDFGenerator) createSinglePDF(pdfPath string, images []DownloadedImage)
 			}
 		}
 
+		// Compress image if quality is configured
+		if p.config.ImageQuality > 0 && p.config.ImageQuality < 100 {
+			imgData, err = p.compressImage(imgData, p.config.ImageQuality)
+			if err != nil {
+				// If compression fails, use original image
+				if len(img.Data) > 0 {
+					imgData = img.Data
+				} else {
+					imgData, _ = os.ReadFile(img.Path)
+				}
+			}
+		}
+
 		// Decode image to get dimensions
 		imgConfig, _, err := image.DecodeConfig(bytes.NewReader(imgData))
 		if err != nil {
@@ -148,8 +161,23 @@ func (p *PDFGenerator) createSinglePDF(pdfPath string, images []DownloadedImage)
 			PageSize: &gopdf.Rect{W: pageWidth, H: pageHeight},
 		})
 
-		// Add image from file path
-		err = pdf.Image(img.Path, 0, 0, &gopdf.Rect{W: pageWidth, H: pageHeight})
+		// Add image from file path or compressed data
+		var imagePath string
+		var tempFile string
+
+		// If image was compressed, use temp file
+		if p.config.ImageQuality > 0 && p.config.ImageQuality < 100 {
+			tempFile = img.Path + ".compressed.jpg"
+			if writeErr := os.WriteFile(tempFile, imgData, 0644); writeErr == nil {
+				imagePath = tempFile
+			} else {
+				imagePath = img.Path
+			}
+		} else {
+			imagePath = img.Path
+		}
+
+		err = pdf.Image(imagePath, 0, 0, &gopdf.Rect{W: pageWidth, H: pageHeight})
 		if err != nil {
 			// Try to save the image data to a temp file and use that
 			tempPath := img.Path + ".temp.jpg"
@@ -159,8 +187,16 @@ func (p *PDFGenerator) createSinglePDF(pdfPath string, images []DownloadedImage)
 			}
 			if err != nil {
 				// Skip this image if it still fails
+				if tempFile != "" {
+					os.Remove(tempFile)
+				}
 				continue
 			}
+		}
+
+		// Clean up temp file
+		if tempFile != "" {
+			os.Remove(tempFile)
 		}
 	}
 
@@ -170,6 +206,24 @@ func (p *PDFGenerator) createSinglePDF(pdfPath string, images []DownloadedImage)
 	}
 
 	return nil
+}
+
+// compressImage compresses image data to JPEG with specified quality
+func (p *PDFGenerator) compressImage(imgData []byte, quality int) ([]byte, error) {
+	// Decode the image
+	img, _, err := image.Decode(bytes.NewReader(imgData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode image: %w", err)
+	}
+
+	// Encode to JPEG with specified quality
+	var buf bytes.Buffer
+	err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality})
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode image: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }
 
 // CreatePDFWithTitle creates a PDF with a title page
@@ -203,6 +257,10 @@ func (p *PDFGenerator) encryptPDF(pdfPath string, password string) error {
 	// User password: required to open the PDF
 	// Owner password: same as user password for simplicity
 	conf := model.NewAESConfiguration(password, password, 256)
+
+	// Relax validation to avoid color space validation errors
+	// This is needed because some images may have non-standard color spaces
+	conf.ValidationMode = model.ValidationRelaxed
 
 	// Create a temporary output file path
 	encryptedPath := pdfPath + ".encrypted"

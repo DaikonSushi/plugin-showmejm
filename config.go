@@ -13,6 +13,9 @@ type Config struct {
 	BatchSize   int    `json:"batch_size"`    // Images per batch for download
 	PDFMaxPages int    `json:"pdf_max_pages"` // Max pages per PDF file
 
+	// Image compression settings
+	ImageQuality int `json:"image_quality"` // JPEG compression quality (1-100, 0 means no compression)
+
 	// Feature flags
 	AutoFindJM     bool   `json:"auto_find_jm"`     // Auto-find JM numbers in messages
 	PreventDefault bool   `json:"prevent_default"`  // Stop other plugins from handling
@@ -34,6 +37,7 @@ func DefaultConfig() *Config {
 		BaseDir:            "/shared-data/jmDownload", // Shared directory with napcat container
 		BatchSize:          20,
 		PDFMaxPages:        200,
+		ImageQuality:       0, // 0 means no compression, 1-100 for JPEG quality
 		AutoFindJM:         true,
 		PreventDefault:     true,
 		PDFPassword:        "",
@@ -78,6 +82,13 @@ func LoadConfig() (*Config, error) {
 	// Ensure default values for new fields
 	if config.ConcurrentDownload <= 0 {
 		config.ConcurrentDownload = 10
+	}
+
+	// Validate image quality range
+	if config.ImageQuality < 0 {
+		config.ImageQuality = 0
+	} else if config.ImageQuality > 100 {
+		config.ImageQuality = 100
 	}
 
 	// Create base directory if not exists
