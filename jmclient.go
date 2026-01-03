@@ -14,6 +14,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -786,8 +787,13 @@ func (c *JMClient) GetScrambleNum(scrambleID string, photoID string, filename st
 			x = 8
 		}
 		
+		// Remove file extension from filename (important!)
+		// Python: of_file_name(url, trim_suffix=True)
+		ext := filepath.Ext(filename)
+		filenameWithoutExt := strings.TrimSuffix(filename, ext)
+		
 		// MD5 hash based calculation
-		s := fmt.Sprintf("%d%s", aid, filename)
+		s := fmt.Sprintf("%d%s", aid, filenameWithoutExt)
 		hash := md5.Sum([]byte(s))
 		hashHex := hex.EncodeToString(hash[:])
 		
@@ -825,32 +831,67 @@ func (c *JMClient) DecodeScrambledImage(data []byte, chapter *Chapter, filename 
 	// Create new image for decoded result
 	result := image.NewRGBA(bounds)
 
-	// Algorithm from Python JMComic library:
-	// over = height % num (remainder)
-	// move = floor(height / num) (base segment height)
+	// JM scramble algorithm:
+	// The image is divided into `scrambleNum` segments.
+	// Each half of the segments are reversed independently.
+	// For 10 segments: scrambled order is 1,2,3,4,5,6,7,8,9,10 (top to bottom)
+	// Original order should be: 5,4,3,2,1,10,9,8,7,6
+	// 
+	// This means:
+	// - First half (segments 1-5) maps to original positions 5,4,3,2,1
+	// - Second half (segments 6-10) maps to original positions 10,9,8,7,6
+
 	over := height % scrambleNum
 	move := height / scrambleNum
+	halfNum := scrambleNum / 2
 
 	for i := 0; i < scrambleNum; i++ {
-		// Source Y position in scrambled image
-		srcY := height - (move * (i + 1)) - over
-		
-		// Destination Y position in decoded image
+		// Destination Y position (where to place in decoded image)
 		dstY := move * i
-		
-		// Segment height for this iteration
-		segH := move
-		
-		if i == 0 {
-			// First segment includes the remainder
-			segH += over
-		} else {
-			// Other segments: destination offset by remainder
+		if i > 0 {
 			dstY += over
+		}
+		
+		// Calculate segment height
+		segH := move
+		if i == 0 {
+			segH += over
+		}
+		
+		// Calculate source segment index based on the reversal pattern:
+		// For i in first half (0 to halfNum-1): source is (halfNum-1-i)
+		// For i in second half (halfNum to scrambleNum-1): source is (scrambleNum-1 - (i - halfNum))
+		var srcIdx int
+		if i < halfNum {
+			// First half: reverse within first half
+			// i=0 -> srcIdx=4, i=1 -> srcIdx=3, ...
+			srcIdx = halfNum - 1 - i
+		} else {
+			// Second half: reverse within second half
+			// i=5 -> srcIdx=9, i=6 -> srcIdx=8, ...
+			srcIdx = scrambleNum - 1 - (i - halfNum)
+		}
+		
+		// Source Y position in scrambled image
+		srcY := move * srcIdx
+		if srcIdx > 0 {
+			srcY += over
+		}
+		
+		// Source segment height (same logic as destination)
+		srcSegH := move
+		if srcIdx == 0 {
+			srcSegH += over
+		}
+		
+		// Use the minimum height to avoid overflow
+		copyH := segH
+		if srcSegH < copyH {
+			copyH = srcSegH
 		}
 
 		// Copy segment from source to destination
-		for y := 0; y < segH; y++ {
+		for y := 0; y < copyH; y++ {
 			for x := 0; x < width; x++ {
 				result.Set(x, dstY+y, img.At(x, srcY+y))
 			}
