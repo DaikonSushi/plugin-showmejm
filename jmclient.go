@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
-	"image/draw"
 	"image/jpeg"
 	_ "image/png"
 	"io"
@@ -823,41 +822,39 @@ func (c *JMClient) DecodeScrambledImage(data []byte, chapter *Chapter, filename 
 		return data, nil
 	}
 
-	// Calculate segment height
-	remainder := height % scrambleNum
-	segmentHeight := height / scrambleNum
-
-	// Create new image
+	// Create new image for decoded result
 	result := image.NewRGBA(bounds)
 
-	// Unscramble segments - reverse the scrambling
+	// Algorithm from Python JMComic library:
+	// over = height % num (remainder)
+	// move = floor(height / num) (base segment height)
+	over := height % scrambleNum
+	move := height / scrambleNum
+
 	for i := 0; i < scrambleNum; i++ {
-		// Calculate source position
-		srcY := height - (i+1)*segmentHeight
-		srcH := segmentHeight
+		// Source Y position in scrambled image
+		srcY := height - (move * (i + 1)) - over
 		
-		if i == scrambleNum-1 {
-			srcY = 0
-			srcH = segmentHeight + remainder
-		} else if i == 0 {
-			srcY = height - segmentHeight - remainder
-		}
-
-		// Calculate destination position
-		dstY := i * segmentHeight
-		if i > 0 {
-			dstY += remainder
-		}
+		// Destination Y position in decoded image
+		dstY := move * i
 		
-		dstH := segmentHeight
+		// Segment height for this iteration
+		segH := move
+		
 		if i == 0 {
-			dstH += remainder
+			// First segment includes the remainder
+			segH += over
+		} else {
+			// Other segments: destination offset by remainder
+			dstY += over
 		}
 
-		// Copy segment
-		srcRect := image.Rect(0, srcY, width, srcY+srcH)
-		dstRect := image.Rect(0, dstY, width, dstY+dstH)
-		draw.Draw(result, dstRect, img, srcRect.Min, draw.Src)
+		// Copy segment from source to destination
+		for y := 0; y < segH; y++ {
+			for x := 0; x < width; x++ {
+				result.Set(x, dstY+y, img.At(x, srcY+y))
+			}
+		}
 	}
 
 	// Encode result
