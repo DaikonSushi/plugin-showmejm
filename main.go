@@ -231,7 +231,7 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 
 
 	// Upload files using BotClient
-	uploadSuccess := true
+	
 	for i, pdfPath := range pdfFiles {
 		// Check file exists and has size
 		info, err := os.Stat(pdfPath)
@@ -257,7 +257,7 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 		if uploadErr != nil {
 			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 上传文件失败: %v", uploadErr)))
 			bot.Log("error", fmt.Sprintf("Upload failed: %v", uploadErr))
-			uploadSuccess = false
+			
 		} else {
 			bot.Log("info", fmt.Sprintf("Uploaded: %s", fileName))
 		}
