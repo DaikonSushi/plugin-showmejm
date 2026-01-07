@@ -86,7 +86,6 @@ func (p *ShowMeJMPlugin) OnMessage(ctx context.Context, bot *pluginsdk.BotClient
 		if len(numbers) > 0 {
 			concatenated := strings.Join(numbers, "")
 			if len(concatenated) >= 6 && len(concatenated) <= 7 {
-				bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("你提到了%s...对吧?", concatenated)))
 				go p.downloadComic(ctx, bot, msg, concatenated)
 				return p.config.PreventDefault
 			}
@@ -201,7 +200,6 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	comicID = strings.TrimSpace(comicID)
 	comicID = strings.TrimPrefix(strings.ToUpper(comicID), "JM")
 
-	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("📥 即将开始下载 JM%s, 请稍候...", comicID)))
 
 	// Get comic details
 	comic, err := p.client.GetComicDetail(comicID)
@@ -221,8 +219,7 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 		return
 	}
 
-	bot.Log("info", fmt.Sprintf("Downloaded %d images", len(images)))
-	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ 已下载 %d 张图片，正在生成PDF...", len(images))))
+
 
 	// Create PDF
 	pdfGen := NewPDFGenerator(p.config)
@@ -232,7 +229,6 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 		return
 	}
 
-	bot.Reply(msg, pluginsdk.Text("📤 PDF已打包完成，正在上传..."))
 
 	// Upload files using BotClient
 	uploadSuccess := true
@@ -267,9 +263,6 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 		}
 	}
 
-	if uploadSuccess {
-		bot.Reply(msg, pluginsdk.Text("✅ 上传完成！"))
-	}
 
 	// Cleanup if configured
 	// downloader.CleanupDownload(comic)
