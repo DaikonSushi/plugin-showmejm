@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/DaikonSushi/bot-platform/pkg/pluginsdk"
 )
@@ -17,6 +18,10 @@ type ShowMeJMPlugin struct {
 	bot    *pluginsdk.BotClient
 	config *Config
 	client *JMClient
+
+	// Concurrency control
+	taskSlots  chan struct{} // Global task-level semaphore (capacity = config.MaxConcurrentTasks)
+	activeJobs sync.Map      // key: comicID (string), value: struct{}; prevents duplicate downloads of the same comic
 }
 
 // Info returns plugin metadata
@@ -46,7 +51,14 @@ func (p *ShowMeJMPlugin) OnStart(bot *pluginsdk.BotClient) error {
 	// Initialize JM client
 	p.client = NewJMClient(config)
 
-	bot.Log("info", "ShowMeJM plugin v3.1.0 started successfully")
+	// Initialize task-level concurrency control
+	slots := config.MaxConcurrentTasks
+	if slots <= 0 {
+		slots = 2
+	}
+	p.taskSlots = make(chan struct{}, slots)
+
+	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.1.0 started successfully (max concurrent tasks=%d)", slots))
 	return nil
 }
 
@@ -200,6 +212,21 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	comicID = strings.TrimSpace(comicID)
 	comicID = strings.TrimPrefix(strings.ToUpper(comicID), "JM")
 
+	// Gate 1: de-duplicate by comicID — reject if the same comic is already being downloaded.
+	if _, loaded := p.activeJobs.LoadOrStore(comicID, struct{}{}); loaded {
+		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("⏳ JM%s 正在下载中，请稍候，完成后会自动发给你~", comicID)))
+		return
+	}
+	defer p.activeJobs.Delete(comicID)
+
+	// Gate 2: global task-level semaphore — bound the number of concurrent tasks across the whole plugin.
+	select {
+	case p.taskSlots <- struct{}{}:
+		defer func() { <-p.taskSlots }()
+	default:
+		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("🚦 同时处理的下载任务已达上限(%d)，请稍后再试~", cap(p.taskSlots))))
+		return
+	}
 
 	// Get comic details
 	comic, err := p.client.GetComicDetail(comicID)

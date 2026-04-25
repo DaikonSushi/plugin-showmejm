@@ -28,7 +28,10 @@ type Config struct {
 
 	// JM API settings
 	JMDomains          []string `json:"jm_domains"`          // Available JM domains
-	ConcurrentDownload int      `json:"concurrent_download"` // Max concurrent image downloads
+	ConcurrentDownload int      `json:"concurrent_download"` // Max concurrent image downloads per task
+
+	// Task-level concurrency
+	MaxConcurrentTasks int `json:"max_concurrent_tasks"` // Max concurrent comic-download tasks across the whole plugin
 }
 
 // DefaultConfig returns default configuration
@@ -46,6 +49,7 @@ func DefaultConfig() *Config {
 		GroupWhitelist:     []int64{},
 		JMDomains:          []string{},
 		ConcurrentDownload: 10,
+		MaxConcurrentTasks: 2,
 	}
 }
 
@@ -82,6 +86,9 @@ func LoadConfig() (*Config, error) {
 	// Ensure default values for new fields
 	if config.ConcurrentDownload <= 0 {
 		config.ConcurrentDownload = 10
+	}
+	if config.MaxConcurrentTasks <= 0 {
+		config.MaxConcurrentTasks = 2
 	}
 
 	// Validate image quality range
