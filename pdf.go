@@ -10,6 +10,7 @@ import (
 	_ "image/png"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
@@ -28,7 +29,10 @@ func NewPDFGenerator(config *Config) *PDFGenerator {
 	}
 }
 
-// CreatePDF creates PDF files from downloaded images
+// CreatePDF creates PDF files from downloaded images.
+// The output is split into multiple parts when either the page count
+// exceeds PDFMaxPages or the resulting file size exceeds PDFMaxFileSizeMB.
+// Files are produced in reading order and numbered sequentially.
 func (p *PDFGenerator) CreatePDF(comic *Comic, images []DownloadedImage) ([]string, error) {
 	if len(images) == 0 {
 		return nil, fmt.Errorf("no images to convert")
@@ -39,55 +43,139 @@ func (p *PDFGenerator) CreatePDF(comic *Comic, images []DownloadedImage) ([]stri
 		return nil, fmt.Errorf("failed to create PDF directory: %w", err)
 	}
 
-	pdfFiles := make([]string, 0)
+	// Clean up stale part files from previous runs to avoid stale-size false hits.
+	_ = p.cleanupStaleParts(pdfDir, comic.ID)
 
-	// Calculate how many PDFs we need
+	// Calculate how many PDFs we need by page count.
 	maxPages := p.config.PDFMaxPages
 	if maxPages <= 0 {
 		maxPages = len(images)
 	}
 
-	// Split images into chunks
-	totalChunks := (len(images) + maxPages - 1) / maxPages
-	for chunkIdx := 0; chunkIdx < totalChunks; chunkIdx++ {
+	// Max file size in bytes (0 means no size-based splitting).
+	var maxBytes int64
+	if p.config.PDFMaxFileSizeMB > 0 {
+		maxBytes = int64(p.config.PDFMaxFileSizeMB) * 1024 * 1024
+	}
+
+	// Produce temporary per-chunk PDFs first, then rename them to their final
+	// names (with the correct total part count) after all chunks are known.
+	tempFiles := make([]string, 0)
+	totalCoarse := (len(images) + maxPages - 1) / maxPages
+	for chunkIdx := 0; chunkIdx < totalCoarse; chunkIdx++ {
 		start := chunkIdx * maxPages
 		end := start + maxPages
 		if end > len(images) {
 			end = len(images)
 		}
 
-		chunk := images[start:end]
-
-		// Generate PDF filename
-		var pdfPath string
-		if totalChunks == 1 {
-			pdfPath = filepath.Join(pdfDir, fmt.Sprintf("%s.pdf", comic.ID))
-		} else {
-			pdfPath = filepath.Join(pdfDir, fmt.Sprintf("%s-part%d.pdf", comic.ID, chunkIdx+1))
+		subFiles, err := p.buildChunkPDFs(pdfDir, comic.ID, chunkIdx, images[start:end], maxBytes)
+		if err != nil {
+			return nil, err
 		}
-
-		// Check if PDF already exists and has correct size
-		if info, err := os.Stat(pdfPath); err == nil && info.Size() > 1024 {
-			pdfFiles = append(pdfFiles, pdfPath)
-			continue
-		}
-
-		// Create PDF
-		if err := p.createSinglePDF(pdfPath, chunk); err != nil {
-			return nil, fmt.Errorf("failed to create PDF %s: %w", pdfPath, err)
-		}
-
-		// Encrypt PDF if password is configured
-		if p.config.PDFPassword != "" {
-			if err := p.encryptPDF(pdfPath, p.config.PDFPassword); err != nil {
-				return nil, fmt.Errorf("failed to encrypt PDF %s: %w", pdfPath, err)
-			}
-		}
-
-		pdfFiles = append(pdfFiles, pdfPath)
+		tempFiles = append(tempFiles, subFiles...)
 	}
 
-	return pdfFiles, nil
+	// Rename temp files to final names with global ordering preserved.
+	finalFiles := make([]string, 0, len(tempFiles))
+	if len(tempFiles) == 1 {
+		finalPath := filepath.Join(pdfDir, fmt.Sprintf("%s.pdf", comic.ID))
+		if tempFiles[0] != finalPath {
+			if err := os.Rename(tempFiles[0], finalPath); err != nil {
+				return nil, fmt.Errorf("failed to finalize PDF name: %w", err)
+			}
+		}
+		finalFiles = append(finalFiles, finalPath)
+	} else {
+		for i, tmp := range tempFiles {
+			finalPath := filepath.Join(pdfDir, fmt.Sprintf("%s-part%d.pdf", comic.ID, i+1))
+			if tmp != finalPath {
+				// If the target exists (leftover), remove it first.
+				_ = os.Remove(finalPath)
+				if err := os.Rename(tmp, finalPath); err != nil {
+					return nil, fmt.Errorf("failed to finalize PDF name: %w", err)
+				}
+			}
+			finalFiles = append(finalFiles, finalPath)
+		}
+	}
+
+	// Encrypt each final PDF once, after naming is finalized.
+	if p.config.PDFPassword != "" {
+		for _, f := range finalFiles {
+			if err := p.encryptPDF(f, p.config.PDFPassword); err != nil {
+				return nil, fmt.Errorf("failed to encrypt PDF %s: %w", f, err)
+			}
+		}
+	}
+
+	return finalFiles, nil
+}
+
+// buildChunkPDFs builds one or more PDFs from a chunk of images.
+// If the produced PDF exceeds maxBytes (>0) and the chunk has more than one page,
+// the chunk is split in half and each half is built recursively, so that every
+// output file stays under the size limit while preserving page order.
+// The returned paths are temporary names and will be finalized by CreatePDF.
+func (p *PDFGenerator) buildChunkPDFs(pdfDir, comicID string, chunkIdx int, chunk []DownloadedImage, maxBytes int64) ([]string, error) {
+	if len(chunk) == 0 {
+		return nil, nil
+	}
+
+	// Unique temporary path; subIdx disambiguates recursive splits.
+	tmpPath := filepath.Join(pdfDir, fmt.Sprintf(".%s-tmp-%d-%d.pdf", comicID, chunkIdx, len(chunk)))
+
+	if err := p.createSinglePDF(tmpPath, chunk); err != nil {
+		return nil, fmt.Errorf("failed to create PDF %s: %w", tmpPath, err)
+	}
+
+	info, err := os.Stat(tmpPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat PDF %s: %w", tmpPath, err)
+	}
+
+	// Size OK, or cannot split further (single page): keep as-is.
+	if maxBytes <= 0 || info.Size() <= maxBytes || len(chunk) == 1 {
+		return []string{tmpPath}, nil
+	}
+
+	// Too large: discard this temp file and split the chunk in half.
+	_ = os.Remove(tmpPath)
+
+	mid := len(chunk) / 2
+	left, err := p.buildChunkPDFs(pdfDir, comicID, chunkIdx*2, chunk[:mid], maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	right, err := p.buildChunkPDFs(pdfDir, comicID, chunkIdx*2+1, chunk[mid:], maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	return append(left, right...), nil
+}
+
+// cleanupStaleParts removes any previously-generated PDFs for this comic so
+// that a fresh run does not mix old part files with new ones (important when
+// the number of parts changes between runs due to size-based splitting).
+func (p *PDFGenerator) cleanupStaleParts(pdfDir, comicID string) error {
+	entries, err := os.ReadDir(pdfDir)
+	if err != nil {
+		return err
+	}
+	prefix := comicID
+	for _, e := range entries {
+		name := e.Name()
+		if filepath.Ext(name) != ".pdf" {
+			continue
+		}
+		// Match "<id>.pdf", "<id>-partN.pdf", and leftover ".<id>-tmp-*.pdf".
+		if name == prefix+".pdf" ||
+			strings.HasPrefix(name, prefix+"-part") ||
+			strings.HasPrefix(name, "."+prefix+"-tmp-") {
+			_ = os.Remove(filepath.Join(pdfDir, name))
+		}
+	}
+	return nil
 }
 
 // createSinglePDF creates a single PDF from images

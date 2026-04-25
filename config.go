@@ -9,9 +9,10 @@ import (
 // Config holds plugin configuration
 type Config struct {
 	// Download settings
-	BaseDir     string `json:"base_dir"`      // Download directory
-	BatchSize   int    `json:"batch_size"`    // Images per batch for download
-	PDFMaxPages int    `json:"pdf_max_pages"` // Max pages per PDF file
+	BaseDir          string `json:"base_dir"`             // Download directory
+	BatchSize        int    `json:"batch_size"`           // Images per batch for download
+	PDFMaxPages      int    `json:"pdf_max_pages"`        // Max pages per PDF file
+	PDFMaxFileSizeMB int    `json:"pdf_max_file_size_mb"` // Max size per PDF file (MB); generated PDF will be split into multiple parts if it exceeds this limit. 0 means no limit.
 
 	// Image compression settings
 	ImageQuality int `json:"image_quality"` // JPEG compression quality (1-100, 0 means no compression)
@@ -40,7 +41,8 @@ func DefaultConfig() *Config {
 		BaseDir:            "/shared-data/jmDownload", // Shared directory with napcat container
 		BatchSize:          20,
 		PDFMaxPages:        200,
-		ImageQuality:       0, // 0 means no compression, 1-100 for JPEG quality
+		PDFMaxFileSizeMB:   45, // Keep each PDF under ~45MB to avoid napcat upload timeouts on large files
+		ImageQuality:       0,  // 0 means no compression, 1-100 for JPEG quality
 		AutoFindJM:         true,
 		PreventDefault:     true,
 		PDFPassword:        "",
@@ -89,6 +91,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if config.MaxConcurrentTasks <= 0 {
 		config.MaxConcurrentTasks = 2
+	}
+	if config.PDFMaxFileSizeMB < 0 {
+		config.PDFMaxFileSizeMB = 0
 	}
 
 	// Validate image quality range
