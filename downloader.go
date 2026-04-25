@@ -73,8 +73,12 @@ func (d *Downloader) downloadChapter(chapter *Chapter, downloadDir string, start
 	var mu sync.Mutex
 	errors := make([]error, 0)
 
-	// Limit concurrent downloads
-	semaphore := make(chan struct{}, 10)
+	// Limit concurrent downloads (fall back to 10 if misconfigured)
+	concurrency := d.config.ConcurrentDownload
+	if concurrency <= 0 {
+		concurrency = 10
+	}
+	semaphore := make(chan struct{}, concurrency)
 
 	for i, imageURL := range chapter.ImageURLs {
 		wg.Add(1)
@@ -145,7 +149,7 @@ func (d *Downloader) downloadChapter(chapter *Chapter, downloadDir string, start
 	wg.Wait()
 
 	if len(errors) > 0 {
-		return nil, fmt.Errorf("download errors: %v", errors[0])
+		return nil, fmt.Errorf("download errors (%d/%d images failed): %v", len(errors), len(chapter.ImageURLs), errors[0])
 	}
 
 	// Filter out empty entries

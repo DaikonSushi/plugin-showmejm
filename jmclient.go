@@ -743,31 +743,98 @@ func (c *JMClient) GetCurrentDomain() string {
 	return "(未配置)"
 }
 
-// DownloadImage downloads an image from URL
+// DownloadImage downloads an image from URL, with retry and CDN failover.
+// On 5xx / network errors it retries with exponential backoff, and if the
+// original CDN host keeps failing it swaps the host for one of the known
+// fallback CDNs in defaultImgDomains and tries again.
 func (c *JMClient) DownloadImage(imageURL string) ([]byte, error) {
+	// Build the ordered list of candidate URLs: original URL first, then the
+	// same path rewritten onto each fallback CDN (de-duplicated against the
+	// original host).
+	candidates := buildImageURLCandidates(imageURL)
+
+	const perURLAttempts = 3
+	var lastErr error
+
+	for _, candidate := range candidates {
+		for attempt := 1; attempt <= perURLAttempts; attempt++ {
+			data, status, err := c.tryDownloadImage(candidate)
+			if err == nil {
+				return data, nil
+			}
+			lastErr = err
+
+			// 404 means the resource doesn't exist on this host and will not
+			// exist on fallbacks with the same path either — give up early.
+			if status == http.StatusNotFound {
+				return nil, err
+			}
+
+			// For 4xx other than 404 it's usually not worth retrying the same
+			// URL; break to try the next candidate CDN.
+			if status >= 400 && status < 500 && status != http.StatusTooManyRequests {
+				break
+			}
+
+			// Back off before the next attempt on the same URL.
+			if attempt < perURLAttempts {
+				backoff := time.Duration(500*(1<<(attempt-1))) * time.Millisecond
+				time.Sleep(backoff)
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("failed to download image after trying %d CDN(s): %w", len(candidates), lastErr)
+}
+
+// tryDownloadImage performs a single HTTP GET for an image URL. It returns
+// the body bytes on 200 OK, otherwise it returns the HTTP status (0 for
+// transport-level errors) together with a descriptive error.
+func (c *JMClient) tryDownloadImage(imageURL string) ([]byte, int, error) {
 	req, err := http.NewRequest("GET", imageURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	c.setHeaders(req)
 	req.Header.Set("Accept", "image/webp,image/apng,image/*,*/*;q=0.8")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to download image: %w", err)
+		return nil, 0, fmt.Errorf("failed to download image %s: %w", imageURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("image download returned status %d for URL %s", resp.StatusCode, imageURL)
+		return nil, resp.StatusCode, fmt.Errorf("image download returned status %d for URL %s", resp.StatusCode, imageURL)
 	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, resp.StatusCode, err
+	}
+	return data, resp.StatusCode, nil
+}
+
+// buildImageURLCandidates returns the original URL first, followed by the
+// same path served from each fallback CDN in defaultImgDomains (skipping
+// the original host to avoid a redundant retry).
+func buildImageURLCandidates(imageURL string) []string {
+	parsed, err := url.Parse(imageURL)
+	if err != nil || parsed.Host == "" {
+		return []string{imageURL}
 	}
 
-	return data, nil
+	candidates := []string{imageURL}
+	originalHost := parsed.Host
+	for _, host := range defaultImgDomains {
+		if host == originalHost {
+			continue
+		}
+		alt := *parsed
+		alt.Host = host
+		candidates = append(candidates, alt.String())
+	}
+	return candidates
 }
 
 // GetScrambleNum calculates the scramble number for image decoding
