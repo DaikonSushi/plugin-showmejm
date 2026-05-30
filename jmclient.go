@@ -103,6 +103,7 @@ func NewJMClient(config *Config) *JMClient {
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
 				TLSClientConfig: &tls.Config{
 					InsecureSkipVerify: true,
 				},
@@ -392,6 +393,9 @@ func (c *JMClient) getChapterImages(baseURL, photoID, defaultScrambleID string) 
 		imgURL := fmt.Sprintf("https://%s/media/photos/%s/%s", chapter.DataOrigDomain, photoID, imgName)
 		chapter.ImageURLs = append(chapter.ImageURLs, imgURL)
 	}
+	if len(chapter.ImageURLs) == 0 {
+		return nil, fmt.Errorf("no image URLs found for photo %s", photoID)
+	}
 
 	return chapter, nil
 }
@@ -585,6 +589,7 @@ func (c *JMClient) CheckDomains() (map[string]string, error) {
 			client := &http.Client{
 				Timeout: 10 * time.Second,
 				Transport: &http.Transport{
+					Proxy: http.ProxyFromEnvironment,
 					TLSClientConfig: &tls.Config{
 						InsecureSkipVerify: true,
 					},
@@ -685,6 +690,7 @@ func (c *JMClient) TestDomain(domain string) string {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
 			},
