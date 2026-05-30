@@ -5,10 +5,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/DaikonSushi/bot-platform/pkg/pluginsdk"
 )
@@ -28,7 +30,7 @@ type ShowMeJMPlugin struct {
 func (p *ShowMeJMPlugin) Info() pluginsdk.PluginInfo {
 	return pluginsdk.PluginInfo{
 		Name:              "showmejm",
-		Version:           "3.2.1",
+		Version:           "3.3.0",
 		Description:       "JM comic download and search plugin with full PDF support",
 		Author:            "hovanzhang",
 		Commands:          []string{"jm", "查jm", "随机jm", "jm更新域名", "jm清空域名"},
@@ -58,7 +60,7 @@ func (p *ShowMeJMPlugin) OnStart(bot *pluginsdk.BotClient) error {
 	}
 	p.taskSlots = make(chan struct{}, slots)
 
-	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.2.1 started successfully (max concurrent tasks=%d)", slots))
+	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.0 started successfully (max concurrent tasks=%d)", slots))
 	return nil
 }
 
@@ -236,6 +238,17 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	}
 
 	bot.Log("info", fmt.Sprintf("Downloading comic: [%s] %s (%d pages)", comic.ID, comic.Title, comic.Pages))
+	if !p.isAdmin(msg) && p.config.MaxPagesWithoutAdmin > 0 && comic.Pages > p.config.MaxPagesWithoutAdmin {
+		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf(
+			"⚠️ JM%s 共 %d 页，超过当前下载上限 %d 页。\n请联系管理员下载：%s",
+			comic.ID,
+			comic.Pages,
+			p.config.MaxPagesWithoutAdmin,
+			p.adminContacts(),
+		)))
+		return
+	}
+
 	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("📖 找到漫画: %s\n📄 共 %d 页，正在下载中...", comic.Title, comic.Pages)))
 
 	// Download images
@@ -246,8 +259,6 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 		return
 	}
 
-
-
 	// Create PDF
 	pdfGen := NewPDFGenerator(p.config)
 	pdfFiles, err := pdfGen.CreatePDF(comic, images)
@@ -256,9 +267,8 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 		return
 	}
 
-
 	// Upload files using BotClient
-	
+	baseFileName := p.safeComicFileName(comic)
 	for i, pdfPath := range pdfFiles {
 		// Check file exists and has size
 		info, err := os.Stat(pdfPath)
@@ -267,32 +277,78 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 			continue
 		}
 
-		fileName := fmt.Sprintf("%s-%d.pdf", comic.ID, i+1)
+		fileName := fmt.Sprintf("%s - part%d.pdf", baseFileName, i+1)
 		if len(pdfFiles) == 1 {
-			fileName = fmt.Sprintf("%s.pdf", comic.ID)
+			fileName = fmt.Sprintf("%s.pdf", baseFileName)
 		}
 
 		bot.Log("info", fmt.Sprintf("Uploading PDF: %s (%d bytes)", fileName, info.Size()))
 
-		var uploadErr error
-		if msg.Type == "group" {
-			uploadErr = bot.UploadGroupFile(msg.GroupID, pdfPath, fileName, "/")
-		} else {
-			uploadErr = bot.UploadPrivateFile(msg.UserID, pdfPath, fileName)
-		}
-
+		uploadErr := p.uploadPDF(bot, msg, pdfPath, fileName)
 		if uploadErr != nil {
-			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 上传文件失败: %v", uploadErr)))
-			bot.Log("error", fmt.Sprintf("Upload failed: %v", uploadErr))
-			
+			bot.Reply(msg, pluginsdk.Text("❌ 上传文件失败，已通知管理员"))
+			bot.Log("error", fmt.Sprintf("showmejm upload failed: comic=%s file=%s path=%s error=%v", comic.ID, fileName, pdfPath, uploadErr))
 		} else {
 			bot.Log("info", fmt.Sprintf("Uploaded: %s", fileName))
 		}
 	}
 
-
 	// Cleanup if configured
 	// downloader.CleanupDownload(comic)
+}
+
+func (p *ShowMeJMPlugin) isAdmin(msg *pluginsdk.Message) bool {
+	return msg.IsAdmin || p.config.IsPluginAdmin(msg.UserID)
+}
+
+func (p *ShowMeJMPlugin) adminContacts() string {
+	if len(p.config.AdminUsers) == 0 {
+		return "未配置"
+	}
+	ids := make([]string, 0, len(p.config.AdminUsers))
+	for _, id := range p.config.AdminUsers {
+		ids = append(ids, strconv.FormatInt(id, 10))
+	}
+	return strings.Join(ids, ", ")
+}
+
+func (p *ShowMeJMPlugin) safeComicFileName(comic *Comic) string {
+	title := strings.TrimSpace(comic.Title)
+	if title == "" {
+		title = "Comic"
+	}
+	name := "JM" + comic.ID + " - " + title
+	invalid := regexp.MustCompile(`[\\/:*?"<>|\r\n\t]+`)
+	name = invalid.ReplaceAllString(name, " ")
+	name = regexp.MustCompile(`\s+`).ReplaceAllString(name, " ")
+	name = strings.TrimSpace(name)
+	if len([]rune(name)) > 120 {
+		runes := []rune(name)
+		name = string(runes[:120])
+	}
+	if name == "" {
+		name = "JM" + comic.ID
+	}
+	return name
+}
+
+func (p *ShowMeJMPlugin) uploadPDF(bot *pluginsdk.BotClient, msg *pluginsdk.Message, pdfPath, fileName string) error {
+	var lastErr error
+	for attempt := 1; attempt <= p.config.UploadRetryCount; attempt++ {
+		if msg.Type == "group" {
+			lastErr = bot.UploadGroupFile(msg.GroupID, pdfPath, fileName, "/")
+		} else {
+			lastErr = bot.UploadPrivateFile(msg.UserID, pdfPath, fileName)
+		}
+		if lastErr == nil {
+			return nil
+		}
+		bot.Log("warn", fmt.Sprintf("Upload attempt %d/%d failed for %s: %v", attempt, p.config.UploadRetryCount, filepath.Base(pdfPath), lastErr))
+		if attempt < p.config.UploadRetryCount {
+			time.Sleep(p.config.UploadRetryDelay())
+		}
+	}
+	return lastErr
 }
 
 // searchComic searches for comics
@@ -373,7 +429,7 @@ func (p *ShowMeJMPlugin) updateDomains(ctx context.Context, bot *pluginsdk.BotCl
 	var sb strings.Builder
 	sb.WriteString("📊 域名连接状态:\n")
 	sb.WriteString("━━━━━━━━━━━━━━━━\n")
-	
+
 	usableDomains := []string{}
 	for domain, status := range domains {
 		icon := "❌"

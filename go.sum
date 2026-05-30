@@ -1,5 +1,5 @@
-github.com/DaikonSushi/bot-platform v0.0.2 h1:vPADRGuZPMyg6iyvFKxRCcjp799k3pHOW8A3RIwcsa0=
-github.com/DaikonSushi/bot-platform v0.0.2/go.mod h1:0UnjwiP23WYtGc3CBuVkLHiUnDpf+5nQjtVIUFfjJxM=
+github.com/DaikonSushi/bot-platform v0.0.3 h1:an2kcUe1Mv5gFVq4n5JOKsX7pIt0RwoXYaE9Kfr5il4=
+github.com/DaikonSushi/bot-platform v0.0.3/go.mod h1:0UnjwiP23WYtGc3CBuVkLHiUnDpf+5nQjtVIUFfjJxM=
 github.com/go-logr/logr v1.4.3 h1:CjnDlHq8ikf6E492q6eKboGOC0T8CDaOvkHCIg8idEI=
 github.com/go-logr/logr v1.4.3/go.mod h1:9T104GzyrTigFIr8wt5mBrctHMim0Nb2HLGrmQ40KvY=
 github.com/go-logr/stdr v1.2.2 h1:hSWxHoqTgW2S2qGc0LTAI563KZ5YKYRhT3MFKZMbjag=

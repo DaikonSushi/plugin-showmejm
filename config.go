@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Config holds plugin configuration
@@ -15,17 +16,22 @@ type Config struct {
 	PDFMaxFileSizeMB int    `json:"pdf_max_file_size_mb"` // Max size per PDF file (MB); generated PDF will be split into multiple parts if it exceeds this limit. 0 means no limit.
 
 	// Image compression settings
-	ImageQuality int `json:"image_quality"` // JPEG compression quality (1-100, 0 means no compression)
+	ImageQuality    int `json:"image_quality"`      // JPEG compression quality (1-100, 0 means no compression)
+	MaxPDFFileCount int `json:"max_pdf_file_count"` // Max number of PDF files to send; compression is increased until this is met
 
 	// Feature flags
-	AutoFindJM     bool   `json:"auto_find_jm"`     // Auto-find JM numbers in messages
-	PreventDefault bool   `json:"prevent_default"`  // Stop other plugins from handling
-	PDFPassword    string `json:"pdf_password"`     // PDF encryption password (for display only)
-	CleanupAfter   bool   `json:"cleanup_after"`    // Delete images after PDF creation
+	AutoFindJM              bool   `json:"auto_find_jm"`               // Auto-find JM numbers in messages
+	PreventDefault          bool   `json:"prevent_default"`            // Stop other plugins from handling
+	PDFPassword             string `json:"pdf_password"`               // PDF encryption password (for display only)
+	CleanupAfter            bool   `json:"cleanup_after"`              // Delete images after PDF creation
+	MaxPagesWithoutAdmin    int    `json:"max_pages_without_admin"`    // Non-admin page limit; 0 means no limit
+	UploadRetryCount        int    `json:"upload_retry_count"`         // Upload retry count per PDF
+	UploadRetryDelaySeconds int    `json:"upload_retry_delay_seconds"` // Delay between upload retries
 
 	// Whitelist (empty means allow all)
 	PersonWhitelist []int64 `json:"person_whitelist"` // Person whitelist
 	GroupWhitelist  []int64 `json:"group_whitelist"`  // Group whitelist
+	AdminUsers      []int64 `json:"admin_users"`      // Admin QQ IDs used for plugin-side fallback and contact hints
 
 	// JM API settings
 	JMDomains          []string `json:"jm_domains"`          // Available JM domains
@@ -38,20 +44,25 @@ type Config struct {
 // DefaultConfig returns default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		BaseDir:            "/shared-data/jmDownload", // Shared directory with napcat container
-		BatchSize:          20,
-		PDFMaxPages:        200,
-		PDFMaxFileSizeMB:   45, // Keep each PDF under ~45MB to avoid napcat upload timeouts on large files
-		ImageQuality:       0,  // 0 means no compression, 1-100 for JPEG quality
-		AutoFindJM:         true,
-		PreventDefault:     true,
-		PDFPassword:        "",
-		CleanupAfter:       false,
-		PersonWhitelist:    []int64{},
-		GroupWhitelist:     []int64{},
-		JMDomains:          []string{},
-		ConcurrentDownload: 10,
-		MaxConcurrentTasks: 2,
+		BaseDir:                 "/shared-data/jmDownload", // Shared directory with napcat container
+		BatchSize:               20,
+		PDFMaxPages:             0,
+		PDFMaxFileSizeMB:        180,
+		ImageQuality:            65,
+		MaxPDFFileCount:         3,
+		AutoFindJM:              true,
+		PreventDefault:          true,
+		PDFPassword:             "",
+		CleanupAfter:            false,
+		MaxPagesWithoutAdmin:    400,
+		UploadRetryCount:        3,
+		UploadRetryDelaySeconds: 5,
+		PersonWhitelist:         []int64{},
+		GroupWhitelist:          []int64{},
+		AdminUsers:              []int64{2577954317},
+		JMDomains:               []string{},
+		ConcurrentDownload:      10,
+		MaxConcurrentTasks:      2,
 	}
 }
 
@@ -95,10 +106,29 @@ func LoadConfig() (*Config, error) {
 	if config.PDFMaxFileSizeMB < 0 {
 		config.PDFMaxFileSizeMB = 0
 	}
+	// Migrate old defaults so existing deployments prefer fewer PDF files.
+	if config.PDFMaxPages == 200 {
+		config.PDFMaxPages = 0
+	}
+	if config.PDFMaxFileSizeMB == 45 {
+		config.PDFMaxFileSizeMB = 180
+	}
+	if config.MaxPDFFileCount <= 0 {
+		config.MaxPDFFileCount = 3
+	}
+	if config.MaxPagesWithoutAdmin <= 0 {
+		config.MaxPagesWithoutAdmin = 400
+	}
+	if config.UploadRetryCount <= 0 {
+		config.UploadRetryCount = 3
+	}
+	if config.UploadRetryDelaySeconds <= 0 {
+		config.UploadRetryDelaySeconds = 5
+	}
 
 	// Validate image quality range
-	if config.ImageQuality < 0 {
-		config.ImageQuality = 0
+	if config.ImageQuality <= 0 {
+		config.ImageQuality = 65
 	} else if config.ImageQuality > 100 {
 		config.ImageQuality = 100
 	}
@@ -109,6 +139,21 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return config, nil
+}
+
+// UploadRetryDelay returns the configured upload retry delay.
+func (c *Config) UploadRetryDelay() time.Duration {
+	return time.Duration(c.UploadRetryDelaySeconds) * time.Second
+}
+
+// IsPluginAdmin returns true if userID is configured as a plugin admin.
+func (c *Config) IsPluginAdmin(userID int64) bool {
+	for _, admin := range c.AdminUsers {
+		if admin == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // Save saves configuration to file

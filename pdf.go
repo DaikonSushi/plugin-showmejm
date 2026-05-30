@@ -38,6 +38,60 @@ func (p *PDFGenerator) CreatePDF(comic *Comic, images []DownloadedImage) ([]stri
 		return nil, fmt.Errorf("no images to convert")
 	}
 
+	qualities := p.qualityAttempts()
+	originalQuality := p.config.ImageQuality
+	defer func() { p.config.ImageQuality = originalQuality }()
+
+	var lastFiles []string
+	var lastErr error
+	for _, quality := range qualities {
+		p.config.ImageQuality = quality
+		files, err := p.createPDFWithCurrentQuality(comic, images)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		lastFiles = files
+		if p.config.MaxPDFFileCount <= 0 || len(files) <= p.config.MaxPDFFileCount {
+			return files, nil
+		}
+		lastErr = fmt.Errorf("generated %d PDF files with quality %d, exceeding max_pdf_file_count=%d", len(files), quality, p.config.MaxPDFFileCount)
+	}
+
+	for _, f := range lastFiles {
+		_ = os.Remove(f)
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("failed to create PDF")
+}
+
+func (p *PDFGenerator) qualityAttempts() []int {
+	initial := p.config.ImageQuality
+	if initial <= 0 || initial > 100 {
+		initial = 65
+	}
+	candidates := []int{initial, 55, 45, 35, 30}
+	seen := make(map[int]bool)
+	result := make([]int, 0, len(candidates))
+	for _, q := range candidates {
+		if q < 1 {
+			q = 1
+		}
+		if q > 100 {
+			q = 100
+		}
+		if !seen[q] {
+			seen[q] = true
+			result = append(result, q)
+		}
+	}
+	return result
+}
+
+func (p *PDFGenerator) createPDFWithCurrentQuality(comic *Comic, images []DownloadedImage) ([]string, error) {
+
 	pdfDir := filepath.Join(p.config.BaseDir, comic.ID)
 	if err := os.MkdirAll(pdfDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create PDF directory: %w", err)
@@ -357,7 +411,7 @@ func (p *PDFGenerator) CreatePDFWithTitle(comic *Comic, images []DownloadedImage
 // CleanupPDF removes generated PDF files
 func (p *PDFGenerator) CleanupPDF(comic *Comic) error {
 	pdfDir := filepath.Join(p.config.BaseDir, comic.ID)
-	
+
 	entries, err := os.ReadDir(pdfDir)
 	if err != nil {
 		return err

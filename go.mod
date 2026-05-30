@@ -3,7 +3,7 @@ module github.com/hovanzhang/plugin-showmejm
 go 1.24.0
 
 require (
-	github.com/DaikonSushi/bot-platform v0.0.2
+	github.com/DaikonSushi/bot-platform v0.0.3
 	github.com/pdfcpu/pdfcpu v0.9.1
 	github.com/signintech/gopdf v0.28.0
 )
@@ -24,6 +24,3 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
-
-// 本地开发时使用（发布到 GitHub 前注释掉这行）
-// replace github.com/DaikonSushi/bot-platform => /Users/hovanzhang/git_repo/napcat/bot-platform
