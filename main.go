@@ -30,7 +30,7 @@ type ShowMeJMPlugin struct {
 func (p *ShowMeJMPlugin) Info() pluginsdk.PluginInfo {
 	return pluginsdk.PluginInfo{
 		Name:              "showmejm",
-		Version:           "3.3.1",
+		Version:           "3.3.2",
 		Description:       "JM comic download and search plugin with full PDF support",
 		Author:            "hovanzhang",
 		Commands:          []string{"jm", "查jm", "随机jm", "jm更新域名", "jm清空域名"},
@@ -60,7 +60,7 @@ func (p *ShowMeJMPlugin) OnStart(bot *pluginsdk.BotClient) error {
 	}
 	p.taskSlots = make(chan struct{}, slots)
 
-	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.1 started successfully (max concurrent tasks=%d)", slots))
+	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.2 started successfully (max concurrent tasks=%d)", slots))
 	return nil
 }
 
@@ -185,13 +185,10 @@ func (p *ShowMeJMPlugin) checkWhitelist(msg *pluginsdk.Message) bool {
 	}
 
 	if msg.Type == "group" {
-		if len(p.config.GroupWhitelist) > 0 && !containsID(p.config.GroupWhitelist, msg.GroupID) {
-			return false
+		if len(p.config.GroupWhitelist) == 0 {
+			return true
 		}
-		if len(p.config.PersonWhitelist) > 0 {
-			return containsID(p.config.PersonWhitelist, msg.UserID)
-		}
-		return true
+		return containsID(p.config.GroupWhitelist, msg.GroupID)
 	}
 
 	if len(p.config.PersonWhitelist) == 0 {

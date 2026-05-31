@@ -81,7 +81,7 @@ docker-compose up -d
 | `cleanup_after` | 生成 PDF 后是否删除原图 | false |
 | `concurrent_download` | 最大并发下载数 | 10 |
 | `person_whitelist` | 账号白名单，非空时仅允许列表内账号使用 | [] |
-| `group_whitelist` | 群白名单，非空时仅允许列表内群聊使用；若账号白名单非空，群内用户仍需账号授权 | [] |
+| `group_whitelist` | 群白名单，非空时仅允许列表内群聊使用；群在白名单内则群成员均可使用 | [] |
 | `admin_users` | 插件管理员 QQ 号，可管理权限并绕过白名单 | [2577954317] |
 
 ### 图片压缩说明
