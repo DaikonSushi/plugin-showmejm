@@ -30,7 +30,7 @@ type ShowMeJMPlugin struct {
 func (p *ShowMeJMPlugin) Info() pluginsdk.PluginInfo {
 	return pluginsdk.PluginInfo{
 		Name:              "showmejm",
-		Version:           "3.3.2",
+		Version:           "3.3.3",
 		Description:       "JM comic download and search plugin with full PDF support",
 		Author:            "hovanzhang",
 		Commands:          []string{"jm", "查jm", "随机jm", "jm更新域名", "jm清空域名"},
@@ -60,7 +60,7 @@ func (p *ShowMeJMPlugin) OnStart(bot *pluginsdk.BotClient) error {
 	}
 	p.taskSlots = make(chan struct{}, slots)
 
-	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.2 started successfully (max concurrent tasks=%d)", slots))
+	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.3 started successfully (max concurrent tasks=%d)", slots))
 	return nil
 }
 
@@ -74,45 +74,29 @@ func (p *ShowMeJMPlugin) OnStop() error {
 
 // OnMessage handles all incoming messages
 func (p *ShowMeJMPlugin) OnMessage(ctx context.Context, bot *pluginsdk.BotClient, msg *pluginsdk.Message) bool {
-	// Check whitelist
-	if !p.checkWhitelist(msg) {
+	if !p.config.AutoFindJM {
 		return false
 	}
 
-	// Auto-find JM numbers in message
-	if p.config.AutoFindJM {
-		text := msg.Text
-		// Remove CQ codes (e.g., [CQ:face,id=344,...]) to avoid false triggers from emojis/images
-		text = regexp.MustCompile(`\[CQ:[^\]]+\]`).ReplaceAllString(text, "")
-		// Remove HTML entities (e.g., &#91; &#93;)
-		text = regexp.MustCompile(`&#\d+;`).ReplaceAllString(text, "")
-		// Remove @ mentions
-		text = regexp.MustCompile(`@\S+\s*`).ReplaceAllString(text, "")
-
-		// Skip if text is empty after filtering
-		text = strings.TrimSpace(text)
-		if text == "" {
-			return false
-		}
-
-		// Find all numbers and concatenate
-		numbers := regexp.MustCompile(`\d+`).FindAllString(text, -1)
-		if len(numbers) > 0 {
-			concatenated := strings.Join(numbers, "")
-			if len(concatenated) >= 6 && len(concatenated) <= 7 {
-				go p.downloadComic(ctx, bot, msg, concatenated)
-				return p.config.PreventDefault
-			}
-		}
+	comicID, ok := p.autoFindComicID(msg.Text)
+	if !ok {
+		return false
 	}
-	return false
+
+	if !p.checkWhitelist(msg) {
+		p.replyUnauthorized(bot, msg)
+		return p.config.PreventDefault
+	}
+
+	go p.downloadComic(ctx, bot, msg, comicID)
+	return p.config.PreventDefault
 }
 
 // OnCommand handles registered commands
 func (p *ShowMeJMPlugin) OnCommand(ctx context.Context, bot *pluginsdk.BotClient, cmd string, args []string, msg *pluginsdk.Message) bool {
 	// Check whitelist
 	if !p.checkWhitelist(msg) {
-		bot.Reply(msg, pluginsdk.Text("抱歉，您没有使用此功能的权限"))
+		p.replyUnauthorized(bot, msg)
 		return true
 	}
 
@@ -197,6 +181,29 @@ func (p *ShowMeJMPlugin) checkWhitelist(msg *pluginsdk.Message) bool {
 	return containsID(p.config.PersonWhitelist, msg.UserID)
 }
 
+func (p *ShowMeJMPlugin) autoFindComicID(rawText string) (string, bool) {
+	text := rawText
+	// Remove CQ codes (e.g., [CQ:face,id=344,...]) to avoid false triggers from emojis/images
+	text = regexp.MustCompile(`\[CQ:[^\]]+\]`).ReplaceAllString(text, "")
+	// Remove HTML entities (e.g., &#91; &#93;)
+	text = regexp.MustCompile(`&#\d+;`).ReplaceAllString(text, "")
+	// Remove @ mentions
+	text = regexp.MustCompile(`@\S+\s*`).ReplaceAllString(text, "")
+
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", false
+	}
+
+	numbers := regexp.MustCompile(`\d+`).FindAllString(text, -1)
+	if len(numbers) == 0 {
+		return "", false
+	}
+
+	concatenated := strings.Join(numbers, "")
+	return concatenated, len(concatenated) >= 6 && len(concatenated) <= 7
+}
+
 // showHelp displays help information
 func (p *ShowMeJMPlugin) showHelp(bot *pluginsdk.BotClient, msg *pluginsdk.Message) {
 	helpText := `📚 JM漫画下载助手
@@ -210,22 +217,27 @@ func (p *ShowMeJMPlugin) showHelp(bot *pluginsdk.BotClient, msg *pluginsdk.Messa
 例: jm 114514
 
 3.🎲 下载随机本子:
-格式: 随机jm [关键词(可选)]
+格式: 随机jm [关键词(可选)]`
+
+	if p.isAdmin(msg) {
+		helpText += `
 
 4.🌐 域名管理:
 - jm check / jm更新域名 - 自动检测可用域名
 - jm domain <域名> - 手动设置域名
-- jm clear / jm清空域名 - 清除自定义域名`
-
-	if p.isAdmin(msg) {
-		helpText += `
+- jm clear / jm清空域名 - 清除自定义域名
 
 5.🛡️ 权限管理:
 - jm allow <QQ号> - 添加账号权限
 - jm deny <QQ号> - 移除账号权限
 - jm allow group <群号> - 添加群权限
 - jm deny group <群号> - 移除群权限
-- jm list - 查看当前权限`
+- jm list - 查看当前权限
+
+🛡️ 当前权限:
+账号白名单: ` + formatIDList(p.config.PersonWhitelist) + `
+群白名单: ` + formatIDList(p.config.GroupWhitelist) + `
+管理员: ` + formatIDList(p.config.AdminUsers)
 	}
 
 	if p.config.PDFPassword != "" {
@@ -337,6 +349,10 @@ func (p *ShowMeJMPlugin) adminContacts() string {
 		ids = append(ids, strconv.FormatInt(id, 10))
 	}
 	return strings.Join(ids, ", ")
+}
+
+func (p *ShowMeJMPlugin) replyUnauthorized(bot *pluginsdk.BotClient, msg *pluginsdk.Message) {
+	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("抱歉，您没有使用此功能的权限。请向管理员 %s 申请使用权限。", p.adminContacts())))
 }
 
 func containsID(ids []int64, target int64) bool {
