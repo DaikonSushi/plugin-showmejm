@@ -30,7 +30,7 @@ type ShowMeJMPlugin struct {
 func (p *ShowMeJMPlugin) Info() pluginsdk.PluginInfo {
 	return pluginsdk.PluginInfo{
 		Name:              "showmejm",
-		Version:           "3.3.0",
+		Version:           "3.3.1",
 		Description:       "JM comic download and search plugin with full PDF support",
 		Author:            "hovanzhang",
 		Commands:          []string{"jm", "查jm", "随机jm", "jm更新域名", "jm清空域名"},
@@ -60,7 +60,7 @@ func (p *ShowMeJMPlugin) OnStart(bot *pluginsdk.BotClient) error {
 	}
 	p.taskSlots = make(chan struct{}, slots)
 
-	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.0 started successfully (max concurrent tasks=%d)", slots))
+	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.1 started successfully (max concurrent tasks=%d)", slots))
 	return nil
 }
 
@@ -127,6 +127,15 @@ func (p *ShowMeJMPlugin) OnCommand(ctx context.Context, bot *pluginsdk.BotClient
 		case "help", "帮助":
 			p.showHelp(bot, msg)
 			return true
+		case "allow", "add", "授权", "添加权限":
+			p.updateWhitelist(bot, msg, args[1:], true)
+			return true
+		case "deny", "remove", "del", "删除权限", "移除权限", "取消授权":
+			p.updateWhitelist(bot, msg, args[1:], false)
+			return true
+		case "list", "权限", "白名单", "whitelist":
+			p.showWhitelist(bot, msg)
+			return true
 		case "domain", "域名":
 			if len(args) > 1 {
 				go p.setDomain(ctx, bot, msg, args[1])
@@ -171,14 +180,24 @@ func (p *ShowMeJMPlugin) OnCommand(ctx context.Context, bot *pluginsdk.BotClient
 
 // checkWhitelist checks if user/group is allowed to use the plugin
 func (p *ShowMeJMPlugin) checkWhitelist(msg *pluginsdk.Message) bool {
-	isGroup := msg.Type == "group"
-	var id int64
-	if isGroup {
-		id = msg.GroupID
-	} else {
-		id = msg.UserID
+	if p.isAdmin(msg) {
+		return true
 	}
-	return p.config.CheckWhitelist(isGroup, id)
+
+	if msg.Type == "group" {
+		if len(p.config.GroupWhitelist) > 0 && !containsID(p.config.GroupWhitelist, msg.GroupID) {
+			return false
+		}
+		if len(p.config.PersonWhitelist) > 0 {
+			return containsID(p.config.PersonWhitelist, msg.UserID)
+		}
+		return true
+	}
+
+	if len(p.config.PersonWhitelist) == 0 {
+		return true
+	}
+	return containsID(p.config.PersonWhitelist, msg.UserID)
 }
 
 // showHelp displays help information
@@ -200,6 +219,17 @@ func (p *ShowMeJMPlugin) showHelp(bot *pluginsdk.BotClient, msg *pluginsdk.Messa
 - jm check / jm更新域名 - 自动检测可用域名
 - jm domain <域名> - 手动设置域名
 - jm clear / jm清空域名 - 清除自定义域名`
+
+	if p.isAdmin(msg) {
+		helpText += `
+
+5.🛡️ 权限管理:
+- jm allow <QQ号> - 添加账号权限
+- jm deny <QQ号> - 移除账号权限
+- jm allow group <群号> - 添加群权限
+- jm deny group <群号> - 移除群权限
+- jm list - 查看当前权限`
+	}
 
 	if p.config.PDFPassword != "" {
 		helpText += "\n\n🔐 PDF密码：" + p.config.PDFPassword
@@ -310,6 +340,105 @@ func (p *ShowMeJMPlugin) adminContacts() string {
 		ids = append(ids, strconv.FormatInt(id, 10))
 	}
 	return strings.Join(ids, ", ")
+}
+
+func containsID(ids []int64, target int64) bool {
+	for _, id := range ids {
+		if id == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *ShowMeJMPlugin) configPath() string {
+	return filepath.Join("plugins-config", "showmejm", "config.json")
+}
+
+func (p *ShowMeJMPlugin) updateWhitelist(bot *pluginsdk.BotClient, msg *pluginsdk.Message, args []string, allow bool) {
+	if !p.isAdmin(msg) {
+		bot.Reply(msg, pluginsdk.Text("抱歉，只有管理员可以管理权限"))
+		return
+	}
+
+	isGroup, id, err := p.parseWhitelistTarget(msg, args)
+	if err != nil {
+		bot.Reply(msg, pluginsdk.Text("📝 权限命令:\n添加账号: jm allow <QQ号>\n移除账号: jm deny <QQ号>\n添加群: jm allow group <群号>\n移除群: jm deny group <群号>"))
+		return
+	}
+
+	if allow {
+		p.config.AddToWhitelist(isGroup, id)
+	} else {
+		p.config.RemoveFromWhitelist(isGroup, id)
+	}
+	if err := p.config.Save(p.configPath()); err != nil {
+		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 保存权限配置失败: %v", err)))
+		return
+	}
+
+	targetName := "账号"
+	if isGroup {
+		targetName = "群"
+	}
+	action := "添加"
+	if !allow {
+		action = "移除"
+	}
+	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ 已%s%s权限: %d", action, targetName, id)))
+}
+
+func (p *ShowMeJMPlugin) parseWhitelistTarget(msg *pluginsdk.Message, args []string) (bool, int64, error) {
+	if len(args) == 0 {
+		return false, 0, fmt.Errorf("missing target")
+	}
+
+	targetType := strings.ToLower(args[0])
+	switch targetType {
+	case "group", "群", "群聊":
+		if len(args) == 1 {
+			if msg.Type == "group" {
+				return true, msg.GroupID, nil
+			}
+			return false, 0, fmt.Errorf("missing group id")
+		}
+		id, err := strconv.ParseInt(args[1], 10, 64)
+		return true, id, err
+	case "user", "person", "qq", "账号", "用户":
+		if len(args) < 2 {
+			return false, 0, fmt.Errorf("missing user id")
+		}
+		id, err := strconv.ParseInt(args[1], 10, 64)
+		return false, id, err
+	default:
+		id, err := strconv.ParseInt(args[0], 10, 64)
+		return false, id, err
+	}
+}
+
+func (p *ShowMeJMPlugin) showWhitelist(bot *pluginsdk.BotClient, msg *pluginsdk.Message) {
+	if !p.isAdmin(msg) {
+		bot.Reply(msg, pluginsdk.Text("抱歉，只有管理员可以查看权限"))
+		return
+	}
+
+	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf(
+		"🛡️ 当前权限配置\n账号白名单: %s\n群白名单: %s\n管理员: %s",
+		formatIDList(p.config.PersonWhitelist),
+		formatIDList(p.config.GroupWhitelist),
+		formatIDList(p.config.AdminUsers),
+	)))
+}
+
+func formatIDList(ids []int64) string {
+	if len(ids) == 0 {
+		return "未配置"
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, strconv.FormatInt(id, 10))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (p *ShowMeJMPlugin) safeComicFileName(comic *Comic) string {

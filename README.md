@@ -60,6 +60,13 @@ docker-compose up -d
    jm check    - 检测可用域名
    jm domain   - 手动设置域名
    jm clear    - 清除域名配置
+
+🛡️ 权限管理（仅管理员）:
+   jm allow <QQ号>        - 添加账号权限
+   jm deny <QQ号>         - 移除账号权限
+   jm allow group <群号>  - 添加群权限
+   jm deny group <群号>   - 移除群权限
+   jm list                - 查看当前权限
 ```
 
 ## 配置说明
@@ -73,6 +80,9 @@ docker-compose up -d
 | `pdf_password` | PDF 加密密码（留空表示不加密） | "" |
 | `cleanup_after` | 生成 PDF 后是否删除原图 | false |
 | `concurrent_download` | 最大并发下载数 | 10 |
+| `person_whitelist` | 账号白名单，非空时仅允许列表内账号使用 | [] |
+| `group_whitelist` | 群白名单，非空时仅允许列表内群聊使用；若账号白名单非空，群内用户仍需账号授权 | [] |
+| `admin_users` | 插件管理员 QQ 号，可管理权限并绕过白名单 | [2577954317] |
 
 ### 图片压缩说明
 
