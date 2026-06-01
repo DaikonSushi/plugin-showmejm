@@ -30,7 +30,7 @@ type ShowMeJMPlugin struct {
 func (p *ShowMeJMPlugin) Info() pluginsdk.PluginInfo {
 	return pluginsdk.PluginInfo{
 		Name:              "showmejm",
-		Version:           "3.3.3",
+		Version:           "3.3.4",
 		Description:       "JM comic download and search plugin with full PDF support",
 		Author:            "hovanzhang",
 		Commands:          []string{"jm", "查jm", "随机jm", "jm更新域名", "jm清空域名"},
@@ -60,7 +60,7 @@ func (p *ShowMeJMPlugin) OnStart(bot *pluginsdk.BotClient) error {
 	}
 	p.taskSlots = make(chan struct{}, slots)
 
-	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.3 started successfully (max concurrent tasks=%d)", slots))
+	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.4 started successfully (max concurrent tasks=%d)", slots))
 	return nil
 }
 
@@ -288,31 +288,39 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 		return
 	}
 
+	downloadDir := filepath.Join(p.config.BaseDir, comic.ID)
 	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("📖 找到漫画: %s\n📄 共 %d 页，正在下载中...", comic.Title, comic.Pages)))
+	bot.Log("info", fmt.Sprintf("showmejm download directory: comic=%s path=%s", comic.ID, downloadDir))
 
 	// Download images
 	downloader := NewDownloader(p.client, p.config)
 	images, err := downloader.DownloadComic(comic)
 	if err != nil {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 下载图片失败: %v", err)))
+		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 下载图片失败: %v\n📁 已下载内容保留在服务器: %s", err, downloadDir)))
 		return
 	}
+	bot.Log("info", fmt.Sprintf("showmejm images ready: comic=%s count=%d dir=%s", comic.ID, len(images), downloadDir))
 
 	// Create PDF
 	pdfGen := NewPDFGenerator(p.config)
 	pdfFiles, err := pdfGen.CreatePDF(comic, images)
 	if err != nil {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 创建PDF失败: %v", err)))
+		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 创建PDF失败: %v\n📁 图片保留在服务器: %s", err, downloadDir)))
 		return
 	}
+	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ PDF已生成，正在上传到%s...\n📁 服务器路径:\n%s", p.uploadTargetName(msg), formatPathList(pdfFiles))))
+	bot.Log("info", fmt.Sprintf("showmejm PDFs generated: comic=%s files=%s", comic.ID, strings.Join(pdfFiles, ", ")))
 
 	// Upload files using BotClient
 	baseFileName := p.safeComicFileName(comic)
+	uploadedCount := 0
+	failedFiles := []string{}
 	for i, pdfPath := range pdfFiles {
 		// Check file exists and has size
 		info, err := os.Stat(pdfPath)
 		if err != nil {
 			bot.Log("error", fmt.Sprintf("PDF file not found: %s", pdfPath))
+			failedFiles = append(failedFiles, pdfPath)
 			continue
 		}
 
@@ -325,15 +333,43 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 
 		uploadErr := p.uploadPDF(bot, msg, pdfPath, fileName)
 		if uploadErr != nil {
-			bot.Reply(msg, pluginsdk.Text("❌ 上传文件失败，已通知管理员"))
+			failedFiles = append(failedFiles, pdfPath)
 			bot.Log("error", fmt.Sprintf("showmejm upload failed: comic=%s file=%s path=%s error=%v", comic.ID, fileName, pdfPath, uploadErr))
 		} else {
+			uploadedCount++
 			bot.Log("info", fmt.Sprintf("Uploaded: %s", fileName))
 		}
 	}
 
+	if len(failedFiles) > 0 {
+		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf(
+			"⚠️ 上传完成但有 %d/%d 个文件失败。\n✅ 已上传: %d 个\n📁 失败文件保留在服务器:\n%s\n请管理员从服务器取文件或稍后重试。",
+			len(failedFiles),
+			len(pdfFiles),
+			uploadedCount,
+			formatPathList(failedFiles),
+		)))
+		return
+	}
+
+	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ JM%s 处理完成，%d 个PDF已上传到%s。", comic.ID, uploadedCount, p.uploadTargetName(msg))))
+
 	// Cleanup if configured
 	// downloader.CleanupDownload(comic)
+}
+
+func (p *ShowMeJMPlugin) uploadTargetName(msg *pluginsdk.Message) string {
+	if msg.Type == "group" {
+		return "群文件根目录"
+	}
+	return "私聊文件"
+}
+
+func formatPathList(paths []string) string {
+	if len(paths) == 0 {
+		return "无"
+	}
+	return strings.Join(paths, "\n")
 }
 
 func (p *ShowMeJMPlugin) isAdmin(msg *pluginsdk.Message) bool {
