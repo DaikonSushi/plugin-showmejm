@@ -30,7 +30,7 @@ type ShowMeJMPlugin struct {
 func (p *ShowMeJMPlugin) Info() pluginsdk.PluginInfo {
 	return pluginsdk.PluginInfo{
 		Name:              "showmejm",
-		Version:           "3.3.6",
+		Version:           "3.3.7",
 		Description:       "JM comic download and search plugin with full PDF support",
 		Author:            "hovanzhang",
 		Commands:          []string{"jm", "查jm", "随机jm", "jm更新域名", "jm清空域名"},
@@ -60,7 +60,7 @@ func (p *ShowMeJMPlugin) OnStart(bot *pluginsdk.BotClient) error {
 	}
 	p.taskSlots = make(chan struct{}, slots)
 
-	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.6 started successfully (max concurrent tasks=%d)", slots))
+	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.7 started successfully (max concurrent tasks=%d)", slots))
 	return nil
 }
 
@@ -276,6 +276,9 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	comic, err := p.client.GetComicDetail(comicID)
 	if err != nil {
 		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 获取漫画信息失败: %v", err)))
+		if !isAdmin {
+			p.notifyAdmins(bot, msg, comicID, "获取漫画信息失败", err, nil)
+		}
 		return
 	}
 
@@ -303,6 +306,7 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 下载图片失败: %v\n📁 已下载内容保留在服务器: %s", err, downloadDir)))
 		} else {
 			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 下载图片失败: %v\n请联系管理员排查。", err)))
+			p.notifyAdmins(bot, msg, comic.ID, "下载图片失败", err, []string{downloadDir})
 		}
 		return
 	}
@@ -316,6 +320,7 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 创建PDF失败: %v\n📁 图片保留在服务器: %s", err, downloadDir)))
 		} else {
 			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 创建PDF失败: %v\n请联系管理员排查。", err)))
+			p.notifyAdmins(bot, msg, comic.ID, "创建PDF失败", err, []string{downloadDir})
 		}
 		return
 	}
@@ -365,6 +370,7 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 			)))
 		} else {
 			bot.Reply(msg, pluginsdk.Text("⚠️ 文件上传失败，请联系管理员处理。"))
+			p.notifyAdmins(bot, msg, comic.ID, "上传PDF失败", fmt.Errorf("%d/%d files failed, %d uploaded", len(failedFiles), len(pdfFiles), uploadedCount), failedFiles)
 		}
 		return
 	}
@@ -384,6 +390,41 @@ func (p *ShowMeJMPlugin) uploadTargetName(msg *pluginsdk.Message) string {
 		return "群文件根目录"
 	}
 	return "私聊文件"
+}
+
+func (p *ShowMeJMPlugin) notifyAdmins(bot *pluginsdk.BotClient, msg *pluginsdk.Message, comicID, stage string, err error, paths []string) {
+	if len(p.config.AdminUsers) == 0 {
+		return
+	}
+
+	location := "私聊"
+	if msg.Type == "group" {
+		location = fmt.Sprintf("群聊 %d", msg.GroupID)
+	}
+
+	text := fmt.Sprintf(
+		"⚠️ ShowMeJM 普通用户任务失败\n阶段: %s\nJM号: %s\n用户: %d\n来源: %s\n错误: %v",
+		stage,
+		comicID,
+		msg.UserID,
+		location,
+		err,
+	)
+	if msg.Text != "" {
+		text += "\n原消息: " + msg.Text
+	}
+	if len(paths) > 0 {
+		text += "\n服务器路径:\n" + formatPathList(paths)
+	}
+
+	for _, adminID := range p.config.AdminUsers {
+		if adminID == msg.UserID {
+			continue
+		}
+		if _, sendErr := bot.SendPrivateMessage(adminID, pluginsdk.Text(text)); sendErr != nil {
+			bot.Log("warn", fmt.Sprintf("showmejm failed to notify admin %d: %v", adminID, sendErr))
+		}
+	}
 }
 
 func cleanComicID(input string) (string, bool) {
