@@ -30,7 +30,7 @@ type ShowMeJMPlugin struct {
 func (p *ShowMeJMPlugin) Info() pluginsdk.PluginInfo {
 	return pluginsdk.PluginInfo{
 		Name:              "showmejm",
-		Version:           "3.3.4",
+		Version:           "3.3.5",
 		Description:       "JM comic download and search plugin with full PDF support",
 		Author:            "hovanzhang",
 		Commands:          []string{"jm", "查jm", "随机jm", "jm更新域名", "jm清空域名"},
@@ -60,7 +60,7 @@ func (p *ShowMeJMPlugin) OnStart(bot *pluginsdk.BotClient) error {
 	}
 	p.taskSlots = make(chan struct{}, slots)
 
-	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.4 started successfully (max concurrent tasks=%d)", slots))
+	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.5 started successfully (max concurrent tasks=%d)", slots))
 	return nil
 }
 
@@ -249,9 +249,11 @@ func (p *ShowMeJMPlugin) showHelp(bot *pluginsdk.BotClient, msg *pluginsdk.Messa
 
 // downloadComic downloads a comic by ID
 func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotClient, msg *pluginsdk.Message, comicID string) {
-	// Clean comic ID
-	comicID = strings.TrimSpace(comicID)
-	comicID = strings.TrimPrefix(strings.ToUpper(comicID), "JM")
+	comicID, ok := cleanComicID(comicID)
+	if !ok {
+		bot.Reply(msg, pluginsdk.Text("📝 请输入数字JM号，例如: jm 114514"))
+		return
+	}
 
 	// Gate 1: de-duplicate by comicID — reject if the same comic is already being downloaded.
 	if _, loaded := p.activeJobs.LoadOrStore(comicID, struct{}{}); loaded {
@@ -363,6 +365,15 @@ func (p *ShowMeJMPlugin) uploadTargetName(msg *pluginsdk.Message) string {
 		return "群文件根目录"
 	}
 	return "私聊文件"
+}
+
+func cleanComicID(input string) (string, bool) {
+	id := strings.TrimSpace(input)
+	id = strings.TrimPrefix(strings.ToUpper(id), "JM")
+	if id == "" || !regexp.MustCompile(`^\d+$`).MatchString(id) {
+		return "", false
+	}
+	return id, true
 }
 
 func formatPathList(paths []string) string {

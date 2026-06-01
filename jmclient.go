@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/md5"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -53,12 +54,12 @@ type Comic struct {
 
 // Chapter represents a comic chapter
 type Chapter struct {
-	ID               string   `json:"id"`
-	Title            string   `json:"title"`
-	ScrambleID       string   `json:"scramble_id"`
-	ImageURLs        []string `json:"image_urls"`
-	ImageNames       []string `json:"image_names"`
-	DataOrigDomain   string   `json:"data_orig_domain"`
+	ID             string   `json:"id"`
+	Title          string   `json:"title"`
+	ScrambleID     string   `json:"scramble_id"`
+	ImageURLs      []string `json:"image_urls"`
+	ImageNames     []string `json:"image_names"`
+	DataOrigDomain string   `json:"data_orig_domain"`
 }
 
 // SearchResult represents search results
@@ -89,11 +90,12 @@ var defaultDomains = []string{
 
 // Default image domains
 var defaultImgDomains = []string{
-	"cdn-msp.jmcomic.org",
-	"cdn-msp2.jmcomic.org",
 	"cdn-msp.jmapiproxy1.cc",
+	"cdn-msp.jmapiproxy2.cc",
 	"cdn-msp2.jmapiproxy2.cc",
+	"cdn-msp3.jmapiproxy2.cc",
 	"cdn-msp.jmapinodeudzn.net",
+	"cdn-msp3.jmapinodeudzn.net",
 }
 
 // NewJMClient creates a new JM API client
@@ -181,7 +183,7 @@ func (c *JMClient) fetchComicDetail(baseURL, comicID string) (*Comic, error) {
 		return nil, err
 	}
 
-	html := string(body)
+	html := parseJMBase64HTML(string(body))
 
 	// Parse comic info from HTML
 	comic := &Comic{
@@ -193,7 +195,7 @@ func (c *JMClient) fetchComicDetail(baseURL, comicID string) (*Comic, error) {
 	if matches := titleRe.FindStringSubmatch(html); len(matches) > 1 {
 		comic.Title = strings.TrimSpace(matches[1])
 	}
-	
+
 	// Alternative title pattern
 	if comic.Title == "" {
 		titleRe2 := regexp.MustCompile(`<title>([^<]+)</title>`)
@@ -253,7 +255,7 @@ func (c *JMClient) fetchComicDetail(baseURL, comicID string) (*Comic, error) {
 	episodeMatches := episodeRe.FindAllStringSubmatch(html, -1)
 
 	photoIDs := make([]string, 0)
-	
+
 	if len(episodeMatches) > 0 {
 		// Multi-chapter comic
 		seen := make(map[string]bool)
@@ -328,7 +330,7 @@ func (c *JMClient) getChapterImages(baseURL, photoID, defaultScrambleID string) 
 		return nil, err
 	}
 
-	html := string(body)
+	html := parseJMBase64HTML(string(body))
 	chapter := &Chapter{
 		ID: photoID,
 	}
@@ -859,23 +861,23 @@ func (c *JMClient) GetScrambleNum(scrambleID string, photoID string, filename st
 		if aid >= SCRAMBLE_421926 {
 			x = 8
 		}
-		
+
 		// Remove file extension from filename (important!)
 		// Python: of_file_name(url, trim_suffix=True)
 		ext := filepath.Ext(filename)
 		filenameWithoutExt := strings.TrimSuffix(filename, ext)
-		
+
 		// MD5 hash based calculation
 		s := fmt.Sprintf("%d%s", aid, filenameWithoutExt)
 		hash := md5.Sum([]byte(s))
 		hashHex := hex.EncodeToString(hash[:])
-		
+
 		// Get last character's ASCII value
 		lastChar := hashHex[len(hashHex)-1]
 		num := int(lastChar)
 		num = num % x
 		num = num*2 + 2
-		
+
 		return num
 	}
 }
@@ -954,6 +956,19 @@ func (c *JMClient) DecodeScrambledImage(data []byte, chapter *Chapter, filename 
 // Helper function to parse JSON
 func parseJSON(data []byte, v interface{}) error {
 	return json.Unmarshal(data, v)
+}
+
+func parseJMBase64HTML(text string) string {
+	re := regexp.MustCompile(`const html = base64DecodeUtf8\("(.*?)"\)`)
+	matches := re.FindStringSubmatch(text)
+	if len(matches) < 2 {
+		return text
+	}
+	decoded, err := base64.StdEncoding.DecodeString(matches[1])
+	if err != nil {
+		return text
+	}
+	return string(decoded)
 }
 
 // Helper function to build URL
