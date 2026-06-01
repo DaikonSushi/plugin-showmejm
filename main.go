@@ -30,7 +30,7 @@ type ShowMeJMPlugin struct {
 func (p *ShowMeJMPlugin) Info() pluginsdk.PluginInfo {
 	return pluginsdk.PluginInfo{
 		Name:              "showmejm",
-		Version:           "3.3.5",
+		Version:           "3.3.6",
 		Description:       "JM comic download and search plugin with full PDF support",
 		Author:            "hovanzhang",
 		Commands:          []string{"jm", "查jm", "随机jm", "jm更新域名", "jm清空域名"},
@@ -60,7 +60,7 @@ func (p *ShowMeJMPlugin) OnStart(bot *pluginsdk.BotClient) error {
 	}
 	p.taskSlots = make(chan struct{}, slots)
 
-	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.5 started successfully (max concurrent tasks=%d)", slots))
+	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.6 started successfully (max concurrent tasks=%d)", slots))
 	return nil
 }
 
@@ -272,6 +272,7 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	}
 
 	// Get comic details
+	isAdmin := p.isAdmin(msg)
 	comic, err := p.client.GetComicDetail(comicID)
 	if err != nil {
 		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 获取漫画信息失败: %v", err)))
@@ -279,7 +280,7 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	}
 
 	bot.Log("info", fmt.Sprintf("Downloading comic: [%s] %s (%d pages)", comic.ID, comic.Title, comic.Pages))
-	if !p.isAdmin(msg) && p.config.MaxPagesWithoutAdmin > 0 && comic.Pages > p.config.MaxPagesWithoutAdmin {
+	if !isAdmin && p.config.MaxPagesWithoutAdmin > 0 && comic.Pages > p.config.MaxPagesWithoutAdmin {
 		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf(
 			"⚠️ JM%s 共 %d 页，超过当前下载上限 %d 页。\n请联系管理员下载：%s",
 			comic.ID,
@@ -298,7 +299,11 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	downloader := NewDownloader(p.client, p.config)
 	images, err := downloader.DownloadComic(comic)
 	if err != nil {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 下载图片失败: %v\n📁 已下载内容保留在服务器: %s", err, downloadDir)))
+		if isAdmin {
+			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 下载图片失败: %v\n📁 已下载内容保留在服务器: %s", err, downloadDir)))
+		} else {
+			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 下载图片失败: %v\n请联系管理员排查。", err)))
+		}
 		return
 	}
 	bot.Log("info", fmt.Sprintf("showmejm images ready: comic=%s count=%d dir=%s", comic.ID, len(images), downloadDir))
@@ -307,10 +312,16 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	pdfGen := NewPDFGenerator(p.config)
 	pdfFiles, err := pdfGen.CreatePDF(comic, images)
 	if err != nil {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 创建PDF失败: %v\n📁 图片保留在服务器: %s", err, downloadDir)))
+		if isAdmin {
+			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 创建PDF失败: %v\n📁 图片保留在服务器: %s", err, downloadDir)))
+		} else {
+			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 创建PDF失败: %v\n请联系管理员排查。", err)))
+		}
 		return
 	}
-	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ PDF已生成，正在上传到%s...\n📁 服务器路径:\n%s", p.uploadTargetName(msg), formatPathList(pdfFiles))))
+	if isAdmin {
+		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ PDF已生成，正在上传到%s...\n📁 服务器路径:\n%s", p.uploadTargetName(msg), formatPathList(pdfFiles))))
+	}
 	bot.Log("info", fmt.Sprintf("showmejm PDFs generated: comic=%s files=%s", comic.ID, strings.Join(pdfFiles, ", ")))
 
 	// Upload files using BotClient
@@ -344,17 +355,25 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	}
 
 	if len(failedFiles) > 0 {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf(
-			"⚠️ 上传完成但有 %d/%d 个文件失败。\n✅ 已上传: %d 个\n📁 失败文件保留在服务器:\n%s\n请管理员从服务器取文件或稍后重试。",
-			len(failedFiles),
-			len(pdfFiles),
-			uploadedCount,
-			formatPathList(failedFiles),
-		)))
+		if isAdmin {
+			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf(
+				"⚠️ 上传完成但有 %d/%d 个文件失败。\n✅ 已上传: %d 个\n📁 失败文件保留在服务器:\n%s\n请管理员从服务器取文件或稍后重试。",
+				len(failedFiles),
+				len(pdfFiles),
+				uploadedCount,
+				formatPathList(failedFiles),
+			)))
+		} else {
+			bot.Reply(msg, pluginsdk.Text("⚠️ 文件上传失败，请联系管理员处理。"))
+		}
 		return
 	}
 
-	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ JM%s 处理完成，%d 个PDF已上传到%s。", comic.ID, uploadedCount, p.uploadTargetName(msg))))
+	if isAdmin {
+		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ JM%s 处理完成，%d 个PDF已上传到%s。", comic.ID, uploadedCount, p.uploadTargetName(msg))))
+	} else {
+		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ JM%s 处理完成，PDF已上传。", comic.ID)))
+	}
 
 	// Cleanup if configured
 	// downloader.CleanupDownload(comic)
