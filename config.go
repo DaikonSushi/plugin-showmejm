@@ -34,8 +34,13 @@ type Config struct {
 	AdminUsers      []int64 `json:"admin_users"`      // Admin QQ IDs used for plugin-side fallback and contact hints
 
 	// JM API settings
-	JMDomains          []string `json:"jm_domains"`          // Available JM domains
-	ConcurrentDownload int      `json:"concurrent_download"` // Max concurrent image downloads per task
+	JMDomains       []string `json:"jm_domains"`         // Available JM web domains
+	JMAPIEnabled    bool     `json:"jm_api_enabled"`     // Enable mobile API fallback/client
+	JMAPIFirst      bool     `json:"jm_api_first"`       // Try mobile API before web HTML
+	JMAPIDomains    []string `json:"jm_api_domains"`     // Mobile API domains; empty uses built-in defaults
+	JMAPIAppVersion string   `json:"jm_api_app_version"` // Mobile API app version
+
+	ConcurrentDownload int `json:"concurrent_download"` // Max concurrent image downloads per task
 
 	// Task-level concurrency
 	MaxConcurrentTasks int `json:"max_concurrent_tasks"` // Max concurrent comic-download tasks across the whole plugin
@@ -61,6 +66,10 @@ func DefaultConfig() *Config {
 		GroupWhitelist:          []int64{},
 		AdminUsers:              []int64{2577954317},
 		JMDomains:               []string{},
+		JMAPIEnabled:            true,
+		JMAPIFirst:              false,
+		JMAPIDomains:            []string{},
+		JMAPIAppVersion:         APP_VERSION,
 		ConcurrentDownload:      10,
 		MaxConcurrentTasks:      2,
 	}
@@ -124,6 +133,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if config.UploadRetryDelaySeconds <= 0 {
 		config.UploadRetryDelaySeconds = 5
+	}
+	if config.JMAPIAppVersion == "" {
+		config.JMAPIAppVersion = APP_VERSION
 	}
 
 	// Validate image quality range

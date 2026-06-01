@@ -161,6 +161,13 @@ func (c *JMClient) setHeaders(req *http.Request) {
 
 // GetComicDetail gets comic details by ID
 func (c *JMClient) GetComicDetail(comicID string) (*Comic, error) {
+	if c.config.JMAPIEnabled && c.config.JMAPIFirst {
+		comic, err := c.fetchComicDetailFromAPI(comicID)
+		if err == nil {
+			return comic, nil
+		}
+	}
+
 	// Try each domain until success
 	var lastErr error
 	for _, domain := range c.domains {
@@ -172,11 +179,14 @@ func (c *JMClient) GetComicDetail(comicID string) (*Comic, error) {
 		lastErr = err
 	}
 
-	comic, err := c.fetchComicDetailFromAPI(comicID)
-	if err == nil {
-		return comic, nil
+	if c.config.JMAPIEnabled {
+		comic, err := c.fetchComicDetailFromAPI(comicID)
+		if err == nil {
+			return comic, nil
+		}
+		return nil, fmt.Errorf("failed to get comic detail from all domains and app api: html=%v api=%v", lastErr, err)
 	}
-	return nil, fmt.Errorf("failed to get comic detail from all domains and app api: html=%v api=%v", lastErr, err)
+	return nil, fmt.Errorf("failed to get comic detail from all domains: %v", lastErr)
 }
 
 type jmAPIEnvelope struct {
@@ -348,7 +358,15 @@ func (c *JMClient) reqJMAPI(path string, params map[string]string, tokenSecret, 
 
 func (c *JMClient) reqJMAPIText(path string, params map[string]string, tokenSecret string) (string, string, error) {
 	var lastErr error
-	for _, domain := range defaultAPIDomains {
+	domains := c.config.JMAPIDomains
+	if len(domains) == 0 {
+		domains = defaultAPIDomains
+	}
+	for _, domain := range domains {
+		domain = normalizeDomain(domain)
+		if domain == "" {
+			continue
+		}
 		requestParams := copyStringMap(params)
 		ts := strconv.FormatInt(time.Now().Unix(), 10)
 		apiURL := buildURL("https://"+domain, path, requestParams)
@@ -356,7 +374,7 @@ func (c *JMClient) reqJMAPIText(path string, params map[string]string, tokenSecr
 		if err != nil {
 			return "", "", err
 		}
-		setAPIHeaders(req, ts, tokenSecret)
+		setAPIHeaders(req, ts, tokenSecret, c.config.JMAPIAppVersion)
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
@@ -1191,14 +1209,17 @@ func parseJMBase64HTML(text string) string {
 	return string(decoded)
 }
 
-func setAPIHeaders(req *http.Request, ts, secret string) {
+func setAPIHeaders(req *http.Request, ts, secret, appVersion string) {
+	if appVersion == "" {
+		appVersion = APP_VERSION
+	}
 	token := md5Hex(ts + secret)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 9; V1938CT Build/PQ3A.190705.11211812; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/91.0.4472.114 Safari/537.36")
 	req.Header.Set("Accept", "application/json,text/plain,*/*")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("Token", token)
-	req.Header.Set("Tokenparam", ts+","+APP_VERSION)
+	req.Header.Set("Tokenparam", ts+","+appVersion)
 }
 
 func decodeJMAPIData(encoded, ts, secret string) (string, error) {
@@ -1251,6 +1272,14 @@ func copyStringMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func normalizeDomain(domain string) string {
+	domain = strings.TrimSpace(domain)
+	domain = strings.TrimPrefix(domain, "https://")
+	domain = strings.TrimPrefix(domain, "http://")
+	domain = strings.TrimSuffix(domain, "/")
+	return domain
 }
 
 func anyToString(v any) string {
