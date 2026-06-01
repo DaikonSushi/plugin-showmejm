@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/aes"
 	"crypto/md5"
 	"crypto/tls"
 	"encoding/base64"
@@ -14,6 +15,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -71,9 +73,13 @@ type SearchResult struct {
 
 // JM Scramble constants (from JMComic-Crawler-Python)
 const (
-	SCRAMBLE_220980 = 220980
-	SCRAMBLE_268850 = 268850
-	SCRAMBLE_421926 = 421926 // 2023-02-08 changed image cutting algorithm
+	SCRAMBLE_220980          = 220980
+	SCRAMBLE_268850          = 268850
+	SCRAMBLE_421926          = 421926 // 2023-02-08 changed image cutting algorithm
+	APP_VERSION              = "2.0.21"
+	APP_TOKEN_SECRET         = "18comicAPP"
+	APP_TOKEN_SECRET_CONTENT = "18comicAPPContent"
+	APP_DATA_SECRET          = "185Hcomic3PAPP7R"
 )
 
 // Default JM domains (updated from https://jmcmomic.github.io/go/)
@@ -98,12 +104,22 @@ var defaultImgDomains = []string{
 	"cdn-msp3.jmapinodeudzn.net",
 }
 
+var defaultAPIDomains = []string{
+	"www.cdnhjk.net",
+	"www.cdngwc.cc",
+	"www.cdngwc.net",
+	"www.cdngwc.club",
+	"www.cdnhjk.cc",
+}
+
 // NewJMClient creates a new JM API client
 func NewJMClient(config *Config) *JMClient {
+	jar, _ := cookiejar.New(nil)
 	client := &JMClient{
 		config: config,
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
+			Jar:     jar,
 			Transport: &http.Transport{
 				Proxy: http.ProxyFromEnvironment,
 				TLSClientConfig: &tls.Config{
@@ -155,7 +171,211 @@ func (c *JMClient) GetComicDetail(comicID string) (*Comic, error) {
 		}
 		lastErr = err
 	}
-	return nil, fmt.Errorf("failed to get comic detail from all domains: %v", lastErr)
+
+	comic, err := c.fetchComicDetailFromAPI(comicID)
+	if err == nil {
+		return comic, nil
+	}
+	return nil, fmt.Errorf("failed to get comic detail from all domains and app api: html=%v api=%v", lastErr, err)
+}
+
+type jmAPIEnvelope struct {
+	Code     int             `json:"code"`
+	Data     json.RawMessage `json:"data"`
+	ErrorMsg string          `json:"errorMsg"`
+}
+
+type jmAPIAlbum struct {
+	ID          any           `json:"id"`
+	Name        string        `json:"name"`
+	Author      any           `json:"author"`
+	Description string        `json:"description"`
+	Tags        []string      `json:"tags"`
+	Series      []jmAPISeries `json:"series"`
+}
+
+type jmAPISeries struct {
+	ID   any    `json:"id"`
+	Name string `json:"name"`
+	Sort any    `json:"sort"`
+}
+
+type jmAPIChapter struct {
+	ID       any           `json:"id"`
+	Name     string        `json:"name"`
+	Images   []string      `json:"images"`
+	SeriesID any           `json:"series_id"`
+	Series   []jmAPISeries `json:"series"`
+}
+
+func (c *JMClient) fetchComicDetailFromAPI(comicID string) (*Comic, error) {
+	// The mobile API expects cookies. /setting is enough to seed them in the jar.
+	_, _, _ = c.reqJMAPIText("/setting", nil, APP_TOKEN_SECRET)
+
+	var album jmAPIAlbum
+	if err := c.reqJMAPI("/album", map[string]string{"id": comicID}, APP_TOKEN_SECRET, APP_DATA_SECRET, &album); err != nil {
+		return nil, err
+	}
+
+	comic := &Comic{
+		ID:          anyToString(album.ID),
+		Title:       strings.TrimSpace(album.Name),
+		Author:      joinAnyStrings(album.Author),
+		Description: album.Description,
+		Tags:        album.Tags,
+	}
+	if comic.ID == "" {
+		comic.ID = comicID
+	}
+	if comic.Title == "" {
+		comic.Title = fmt.Sprintf("Comic %s", comicID)
+	}
+
+	photoIDs := make([]string, 0, len(album.Series))
+	if len(album.Series) == 0 {
+		photoIDs = append(photoIDs, comic.ID)
+	} else {
+		sort.Slice(album.Series, func(i, j int) bool {
+			return anyToInt(album.Series[i].Sort) < anyToInt(album.Series[j].Sort)
+		})
+		for _, series := range album.Series {
+			id := anyToString(series.ID)
+			if id != "" {
+				photoIDs = append(photoIDs, id)
+			}
+		}
+	}
+
+	for i, photoID := range photoIDs {
+		chapter, err := c.fetchChapterFromAPI(photoID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch chapter %s from app api: %w", photoID, err)
+		}
+		if chapter.Title == "" {
+			chapter.Title = fmt.Sprintf("Chapter %d", i+1)
+		}
+		comic.Pages += len(chapter.ImageURLs)
+		comic.Chapters = append(comic.Chapters, *chapter)
+	}
+
+	if len(comic.Chapters) == 0 {
+		return nil, fmt.Errorf("no chapters found for comic %s from app api", comicID)
+	}
+	return comic, nil
+}
+
+func (c *JMClient) fetchChapterFromAPI(photoID string) (*Chapter, error) {
+	var data jmAPIChapter
+	if err := c.reqJMAPI("/chapter", map[string]string{"id": photoID}, APP_TOKEN_SECRET, APP_DATA_SECRET, &data); err != nil {
+		return nil, err
+	}
+
+	scrambleID, err := c.fetchScrambleIDFromAPI(photoID)
+	if err != nil || scrambleID == "" {
+		scrambleID = strconv.Itoa(SCRAMBLE_220980)
+	}
+
+	chapter := &Chapter{
+		ID:             anyToString(data.ID),
+		Title:          strings.TrimSpace(data.Name),
+		ScrambleID:     scrambleID,
+		ImageNames:     data.Images,
+		DataOrigDomain: defaultImgDomains[0],
+	}
+	if chapter.ID == "" {
+		chapter.ID = photoID
+	}
+	sort.Slice(chapter.ImageNames, func(i, j int) bool {
+		return extractImageNum(chapter.ImageNames[i]) < extractImageNum(chapter.ImageNames[j])
+	})
+	for _, imgName := range chapter.ImageNames {
+		chapter.ImageURLs = append(chapter.ImageURLs, fmt.Sprintf("https://%s/media/photos/%s/%s", chapter.DataOrigDomain, chapter.ID, imgName))
+	}
+	if len(chapter.ImageURLs) == 0 {
+		return nil, fmt.Errorf("no image URLs found for photo %s from app api", photoID)
+	}
+	return chapter, nil
+}
+
+func (c *JMClient) fetchScrambleIDFromAPI(photoID string) (string, error) {
+	params := map[string]string{
+		"id":            photoID,
+		"mode":          "vertical",
+		"page":          "0",
+		"app_img_shunt": "1",
+		"express":       "off",
+		"v":             strconv.FormatInt(time.Now().Unix(), 10),
+	}
+	text, _, err := c.reqJMAPIText("/chapter_view_template", params, APP_TOKEN_SECRET_CONTENT)
+	if err != nil {
+		return "", err
+	}
+	re := regexp.MustCompile(`var scramble_id = (\d+);`)
+	matches := re.FindStringSubmatch(text)
+	if len(matches) < 2 {
+		return "", fmt.Errorf("scramble_id not found")
+	}
+	return matches[1], nil
+}
+
+func (c *JMClient) reqJMAPI(path string, params map[string]string, tokenSecret, dataSecret string, out any) error {
+	text, ts, err := c.reqJMAPIText(path, params, tokenSecret)
+	if err != nil {
+		return err
+	}
+
+	var envelope jmAPIEnvelope
+	if err := json.Unmarshal([]byte(extractJSONObject(text)), &envelope); err != nil {
+		return err
+	}
+	if envelope.Code != http.StatusOK {
+		return fmt.Errorf("app api returned code %d: %s", envelope.Code, envelope.ErrorMsg)
+	}
+
+	var encoded string
+	if err := json.Unmarshal(envelope.Data, &encoded); err != nil {
+		return fmt.Errorf("app api data is not encrypted string: %w", err)
+	}
+	if encoded == "" || encoded == "[]" || encoded == "null" {
+		return fmt.Errorf("app api returned empty data")
+	}
+	decoded, err := decodeJMAPIData(encoded, ts, dataSecret)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal([]byte(decoded), out)
+}
+
+func (c *JMClient) reqJMAPIText(path string, params map[string]string, tokenSecret string) (string, string, error) {
+	var lastErr error
+	for _, domain := range defaultAPIDomains {
+		requestParams := copyStringMap(params)
+		ts := strconv.FormatInt(time.Now().Unix(), 10)
+		apiURL := buildURL("https://"+domain, path, requestParams)
+		req, err := http.NewRequest("GET", apiURL, nil)
+		if err != nil {
+			return "", "", err
+		}
+		setAPIHeaders(req, ts, tokenSecret)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("app api %s returned status %d", domain, resp.StatusCode)
+			continue
+		}
+		return string(body), ts, nil
+	}
+	return "", "", lastErr
 }
 
 // fetchComicDetail fetches comic detail from a specific domain
@@ -969,6 +1189,111 @@ func parseJMBase64HTML(text string) string {
 		return text
 	}
 	return string(decoded)
+}
+
+func setAPIHeaders(req *http.Request, ts, secret string) {
+	token := md5Hex(ts + secret)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 9; V1938CT Build/PQ3A.190705.11211812; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/91.0.4472.114 Safari/537.36")
+	req.Header.Set("Accept", "application/json,text/plain,*/*")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("Token", token)
+	req.Header.Set("Tokenparam", ts+","+APP_VERSION)
+}
+
+func decodeJMAPIData(encoded, ts, secret string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", err
+	}
+	key := []byte(md5Hex(ts + secret))
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	if len(raw)%block.BlockSize() != 0 {
+		return "", fmt.Errorf("encrypted app api data is not full blocks")
+	}
+	decoded := make([]byte, len(raw))
+	for start := 0; start < len(raw); start += block.BlockSize() {
+		block.Decrypt(decoded[start:start+block.BlockSize()], raw[start:start+block.BlockSize()])
+	}
+	if len(decoded) == 0 {
+		return "", fmt.Errorf("empty decrypted app api data")
+	}
+	pad := int(decoded[len(decoded)-1])
+	if pad <= 0 || pad > block.BlockSize() || pad > len(decoded) {
+		return "", fmt.Errorf("invalid app api padding")
+	}
+	return string(decoded[:len(decoded)-pad]), nil
+}
+
+func md5Hex(s string) string {
+	hash := md5.Sum([]byte(s))
+	return hex.EncodeToString(hash[:])
+}
+
+func extractJSONObject(text string) string {
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start >= 0 && end >= start {
+		return text[start : end+1]
+	}
+	return text
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func anyToString(v any) string {
+	switch x := v.(type) {
+	case string:
+		return strings.TrimSpace(x)
+	case float64:
+		return strconv.FormatInt(int64(x), 10)
+	case int:
+		return strconv.Itoa(x)
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case json.Number:
+		return x.String()
+	case nil:
+		return ""
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+}
+
+func anyToInt(v any) int {
+	n, _ := strconv.Atoi(anyToString(v))
+	return n
+}
+
+func joinAnyStrings(v any) string {
+	switch x := v.(type) {
+	case []string:
+		return strings.Join(x, ", ")
+	case []any:
+		parts := make([]string, 0, len(x))
+		for _, item := range x {
+			if s := anyToString(item); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, ", ")
+	case string:
+		return x
+	default:
+		return anyToString(v)
+	}
 }
 
 // Helper function to build URL

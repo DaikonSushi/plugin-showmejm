@@ -30,7 +30,7 @@ type ShowMeJMPlugin struct {
 func (p *ShowMeJMPlugin) Info() pluginsdk.PluginInfo {
 	return pluginsdk.PluginInfo{
 		Name:              "showmejm",
-		Version:           "3.3.7",
+		Version:           "3.4.0",
 		Description:       "JM comic download and search plugin with full PDF support",
 		Author:            "hovanzhang",
 		Commands:          []string{"jm", "查jm", "随机jm", "jm更新域名", "jm清空域名"},
@@ -60,7 +60,7 @@ func (p *ShowMeJMPlugin) OnStart(bot *pluginsdk.BotClient) error {
 	}
 	p.taskSlots = make(chan struct{}, slots)
 
-	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.3.7 started successfully (max concurrent tasks=%d)", slots))
+	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.4.0 started successfully (max concurrent tasks=%d)", slots))
 	return nil
 }
 
@@ -295,7 +295,11 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	}
 
 	downloadDir := filepath.Join(p.config.BaseDir, comic.ID)
-	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("📖 找到漫画: %s\n📄 共 %d 页，正在下载中...", comic.Title, comic.Pages)))
+	if isAdmin {
+		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("📖 找到漫画: %s\n📄 共 %d 页，正在下载中...", comic.Title, comic.Pages)))
+	} else {
+		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("📖 找到漫画: %s", comic.Title)))
+	}
 	bot.Log("info", fmt.Sprintf("showmejm download directory: comic=%s path=%s", comic.ID, downloadDir))
 
 	// Download images
@@ -332,6 +336,7 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	// Upload files using BotClient
 	baseFileName := p.safeComicFileName(comic)
 	uploadedCount := 0
+	uploadedFiles := []string{}
 	failedFiles := []string{}
 	for i, pdfPath := range pdfFiles {
 		// Check file exists and has size
@@ -355,6 +360,7 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 			bot.Log("error", fmt.Sprintf("showmejm upload failed: comic=%s file=%s path=%s error=%v", comic.ID, fileName, pdfPath, uploadErr))
 		} else {
 			uploadedCount++
+			uploadedFiles = append(uploadedFiles, fileName)
 			bot.Log("info", fmt.Sprintf("Uploaded: %s", fileName))
 		}
 	}
@@ -378,7 +384,7 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	if isAdmin {
 		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ JM%s 处理完成，%d 个PDF已上传到%s。", comic.ID, uploadedCount, p.uploadTargetName(msg))))
 	} else {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ JM%s 处理完成，PDF已上传。", comic.ID)))
+		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ 文件已上传:\n%s", formatPathList(uploadedFiles))))
 	}
 
 	// Cleanup if configured
