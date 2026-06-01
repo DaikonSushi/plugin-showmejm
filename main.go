@@ -30,7 +30,7 @@ type ShowMeJMPlugin struct {
 func (p *ShowMeJMPlugin) Info() pluginsdk.PluginInfo {
 	return pluginsdk.PluginInfo{
 		Name:              "showmejm",
-		Version:           "3.4.0",
+		Version:           "3.4.2",
 		Description:       "JM comic download and search plugin with full PDF support",
 		Author:            "hovanzhang",
 		Commands:          []string{"jm", "查jm", "随机jm", "jm更新域名", "jm清空域名"},
@@ -60,7 +60,7 @@ func (p *ShowMeJMPlugin) OnStart(bot *pluginsdk.BotClient) error {
 	}
 	p.taskSlots = make(chan struct{}, slots)
 
-	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.4.0 started successfully (max concurrent tasks=%d)", slots))
+	bot.Log("info", fmt.Sprintf("ShowMeJM plugin v3.4.2 started successfully (max concurrent tasks=%d)", slots))
 	return nil
 }
 
