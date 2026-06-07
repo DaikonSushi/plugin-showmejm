@@ -22,6 +22,7 @@ type Config struct {
 	// Feature flags
 	AutoFindJM              bool   `json:"auto_find_jm"`               // Auto-find JM numbers in messages
 	PreventDefault          bool   `json:"prevent_default"`            // Stop other plugins from handling
+	NotifyStatusInGroup     bool   `json:"notify_status_in_group"`     // Send text status/debug messages in groups; false sends them to admins only
 	PDFPassword             string `json:"pdf_password"`               // PDF encryption password (for display only)
 	CleanupAfter            bool   `json:"cleanup_after"`              // Delete images after PDF creation
 	MaxPagesWithoutAdmin    int    `json:"max_pages_without_admin"`    // Non-admin page limit; 0 means no limit
@@ -55,8 +56,9 @@ func DefaultConfig() *Config {
 		PDFMaxFileSizeMB:        180,
 		ImageQuality:            65,
 		MaxPDFFileCount:         3,
-		AutoFindJM:              true,
+		AutoFindJM:              false,
 		PreventDefault:          true,
+		NotifyStatusInGroup:     false,
 		PDFPassword:             "",
 		CleanupAfter:            false,
 		MaxPagesWithoutAdmin:    400,

@@ -124,7 +124,7 @@ func (p *ShowMeJMPlugin) OnCommand(ctx context.Context, bot *pluginsdk.BotClient
 			if len(args) > 1 {
 				go p.setDomain(ctx, bot, msg, args[1])
 			} else {
-				bot.Reply(msg, pluginsdk.Text("📝 设置域名:\n格式: jm domain <域名>\n例: jm domain 18comic.vip\n\n当前域名: "+p.client.GetCurrentDomain()))
+				p.replyText(bot, msg, "📝 设置域名:\n格式: jm domain <域名>\n例: jm domain 18comic.vip\n\n当前域名: "+p.client.GetCurrentDomain())
 			}
 			return true
 		case "check", "检查", "检测":
@@ -201,7 +201,7 @@ func (p *ShowMeJMPlugin) autoFindComicID(rawText string) (string, bool) {
 	}
 
 	concatenated := strings.Join(numbers, "")
-	return concatenated, len(concatenated) >= 6 && len(concatenated) <= 7
+	return concatenated, len(concatenated) >= 5 && len(concatenated) <= 7
 }
 
 // showHelp displays help information
@@ -244,20 +244,20 @@ func (p *ShowMeJMPlugin) showHelp(bot *pluginsdk.BotClient, msg *pluginsdk.Messa
 		helpText += "\n\n🔐 PDF密码：" + p.config.PDFPassword
 	}
 
-	bot.Reply(msg, pluginsdk.Text(helpText))
+	p.replyText(bot, msg, helpText)
 }
 
 // downloadComic downloads a comic by ID
 func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotClient, msg *pluginsdk.Message, comicID string) {
 	comicID, ok := cleanComicID(comicID)
 	if !ok {
-		bot.Reply(msg, pluginsdk.Text("📝 请输入数字JM号，例如: jm 114514"))
+		p.replyText(bot, msg, "📝 请输入数字JM号，例如: jm 114514")
 		return
 	}
 
 	// Gate 1: de-duplicate by comicID — reject if the same comic is already being downloaded.
 	if _, loaded := p.activeJobs.LoadOrStore(comicID, struct{}{}); loaded {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("⏳ JM%s 正在下载中，请稍候，完成后会自动发给你~", comicID)))
+		p.replyText(bot, msg, fmt.Sprintf("⏳ JM%s 正在下载中，请稍候，完成后会自动发给你~", comicID))
 		return
 	}
 	defer p.activeJobs.Delete(comicID)
@@ -267,7 +267,7 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	case p.taskSlots <- struct{}{}:
 		defer func() { <-p.taskSlots }()
 	default:
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("🚦 同时处理的下载任务已达上限(%d)，请稍后再试~", cap(p.taskSlots))))
+		p.replyText(bot, msg, fmt.Sprintf("🚦 同时处理的下载任务已达上限(%d)，请稍后再试~", cap(p.taskSlots)))
 		return
 	}
 
@@ -275,7 +275,7 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	isAdmin := p.isAdmin(msg)
 	comic, err := p.client.GetComicDetail(comicID)
 	if err != nil {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 获取漫画信息失败: %v", err)))
+		p.replyText(bot, msg, fmt.Sprintf("❌ 获取漫画信息失败: JM%s: %v", comicID, err))
 		if !isAdmin {
 			p.notifyAdmins(bot, msg, comicID, "获取漫画信息失败", err, nil)
 		}
@@ -284,21 +284,21 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 
 	bot.Log("info", fmt.Sprintf("Downloading comic: [%s] %s (%d pages)", comic.ID, comic.Title, comic.Pages))
 	if !isAdmin && p.config.MaxPagesWithoutAdmin > 0 && comic.Pages > p.config.MaxPagesWithoutAdmin {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf(
+		p.replyText(bot, msg, fmt.Sprintf(
 			"⚠️ JM%s 共 %d 页，超过当前下载上限 %d 页。\n请联系管理员下载：%s",
 			comic.ID,
 			comic.Pages,
 			p.config.MaxPagesWithoutAdmin,
 			p.adminContacts(),
-		)))
+		))
 		return
 	}
 
 	downloadDir := filepath.Join(p.config.BaseDir, comic.ID)
 	if isAdmin {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("📖 找到漫画: %s\n📄 共 %d 页，正在下载中...", comic.Title, comic.Pages)))
+		p.replyText(bot, msg, fmt.Sprintf("📖 找到漫画: %s\n📄 共 %d 页，正在下载中...", comic.Title, comic.Pages))
 	} else {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("📖 找到漫画: %s", comic.Title)))
+		p.replyText(bot, msg, fmt.Sprintf("📖 找到漫画: %s", comic.Title))
 	}
 	bot.Log("info", fmt.Sprintf("showmejm download directory: comic=%s path=%s", comic.ID, downloadDir))
 
@@ -307,9 +307,9 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	images, err := downloader.DownloadComic(comic)
 	if err != nil {
 		if isAdmin {
-			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 下载图片失败: %v\n📁 已下载内容保留在服务器: %s", err, downloadDir)))
+			p.replyText(bot, msg, fmt.Sprintf("❌ 下载图片失败: %v\n📁 已下载内容保留在服务器: %s", err, downloadDir))
 		} else {
-			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 下载图片失败: %v\n请联系管理员排查。", err)))
+			p.replyText(bot, msg, fmt.Sprintf("❌ 下载图片失败: %v\n请联系管理员排查。", err))
 			p.notifyAdmins(bot, msg, comic.ID, "下载图片失败", err, []string{downloadDir})
 		}
 		return
@@ -321,15 +321,15 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 	pdfFiles, err := pdfGen.CreatePDF(comic, images)
 	if err != nil {
 		if isAdmin {
-			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 创建PDF失败: %v\n📁 图片保留在服务器: %s", err, downloadDir)))
+			p.replyText(bot, msg, fmt.Sprintf("❌ 创建PDF失败: %v\n📁 图片保留在服务器: %s", err, downloadDir))
 		} else {
-			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 创建PDF失败: %v\n请联系管理员排查。", err)))
+			p.replyText(bot, msg, fmt.Sprintf("❌ 创建PDF失败: %v\n请联系管理员排查。", err))
 			p.notifyAdmins(bot, msg, comic.ID, "创建PDF失败", err, []string{downloadDir})
 		}
 		return
 	}
 	if isAdmin {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ PDF已生成，正在上传到%s...\n📁 服务器路径:\n%s", p.uploadTargetName(msg), formatPathList(pdfFiles))))
+		p.replyText(bot, msg, fmt.Sprintf("✅ PDF已生成，正在上传到%s...\n📁 服务器路径:\n%s", p.uploadTargetName(msg), formatPathList(pdfFiles)))
 	}
 	bot.Log("info", fmt.Sprintf("showmejm PDFs generated: comic=%s files=%s", comic.ID, strings.Join(pdfFiles, ", ")))
 
@@ -367,24 +367,24 @@ func (p *ShowMeJMPlugin) downloadComic(ctx context.Context, bot *pluginsdk.BotCl
 
 	if len(failedFiles) > 0 {
 		if isAdmin {
-			bot.Reply(msg, pluginsdk.Text(fmt.Sprintf(
+			p.replyText(bot, msg, fmt.Sprintf(
 				"⚠️ 上传完成但有 %d/%d 个文件失败。\n✅ 已上传: %d 个\n📁 失败文件保留在服务器:\n%s\n请管理员从服务器取文件或稍后重试。",
 				len(failedFiles),
 				len(pdfFiles),
 				uploadedCount,
 				formatPathList(failedFiles),
-			)))
+			))
 		} else {
-			bot.Reply(msg, pluginsdk.Text("⚠️ 文件上传失败，请联系管理员处理。"))
+			p.replyText(bot, msg, "⚠️ 文件上传失败，请联系管理员处理。")
 			p.notifyAdmins(bot, msg, comic.ID, "上传PDF失败", fmt.Errorf("%d/%d files failed, %d uploaded", len(failedFiles), len(pdfFiles), uploadedCount), failedFiles)
 		}
 		return
 	}
 
 	if isAdmin {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ JM%s 处理完成，%d 个PDF已上传到%s。", comic.ID, uploadedCount, p.uploadTargetName(msg))))
+		p.replyText(bot, msg, fmt.Sprintf("✅ JM%s 处理完成，%d 个PDF已上传到%s。", comic.ID, uploadedCount, p.uploadTargetName(msg)))
 	} else {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ 文件已上传:\n%s", formatPathList(uploadedFiles))))
+		p.replyText(bot, msg, fmt.Sprintf("✅ 文件已上传:\n%s", formatPathList(uploadedFiles)))
 	}
 
 	// Cleanup if configured
@@ -449,6 +449,24 @@ func formatPathList(paths []string) string {
 	return strings.Join(paths, "\n")
 }
 
+func (p *ShowMeJMPlugin) replyText(bot *pluginsdk.BotClient, msg *pluginsdk.Message, text string) {
+	if msg.Type != "group" || p.config.NotifyStatusInGroup {
+		bot.Reply(msg, pluginsdk.Text(text))
+		return
+	}
+
+	prefix := fmt.Sprintf("来自群 %d 用户 %d 的 showmejm 任务：\n", msg.GroupID, msg.UserID)
+	if len(p.config.AdminUsers) == 0 {
+		bot.Log("info", prefix+text)
+		return
+	}
+	for _, adminID := range p.config.AdminUsers {
+		if _, err := bot.SendPrivateMessage(adminID, pluginsdk.Text(prefix+text)); err != nil {
+			bot.Log("warn", fmt.Sprintf("showmejm failed to notify admin %d: %v", adminID, err))
+		}
+	}
+}
+
 func (p *ShowMeJMPlugin) isAdmin(msg *pluginsdk.Message) bool {
 	return msg.IsAdmin || p.config.IsPluginAdmin(msg.UserID)
 }
@@ -465,7 +483,7 @@ func (p *ShowMeJMPlugin) adminContacts() string {
 }
 
 func (p *ShowMeJMPlugin) replyUnauthorized(bot *pluginsdk.BotClient, msg *pluginsdk.Message) {
-	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("抱歉，您没有使用此功能的权限。请向管理员 %s 申请使用权限。", p.adminContacts())))
+	p.replyText(bot, msg, fmt.Sprintf("抱歉，您没有使用此功能的权限。请向管理员 %s 申请使用权限。", p.adminContacts()))
 }
 
 func containsID(ids []int64, target int64) bool {
@@ -483,13 +501,13 @@ func (p *ShowMeJMPlugin) configPath() string {
 
 func (p *ShowMeJMPlugin) updateWhitelist(bot *pluginsdk.BotClient, msg *pluginsdk.Message, args []string, allow bool) {
 	if !p.isAdmin(msg) {
-		bot.Reply(msg, pluginsdk.Text("抱歉，只有管理员可以管理权限"))
+		p.replyText(bot, msg, "抱歉，只有管理员可以管理权限")
 		return
 	}
 
 	isGroup, id, err := p.parseWhitelistTarget(msg, args)
 	if err != nil {
-		bot.Reply(msg, pluginsdk.Text("📝 权限命令:\n添加账号: jm allow <QQ号>\n移除账号: jm deny <QQ号>\n添加群: jm allow group <群号>\n移除群: jm deny group <群号>"))
+		p.replyText(bot, msg, "📝 权限命令:\n添加账号: jm allow <QQ号>\n移除账号: jm deny <QQ号>\n添加群: jm allow group <群号>\n移除群: jm deny group <群号>")
 		return
 	}
 
@@ -499,7 +517,7 @@ func (p *ShowMeJMPlugin) updateWhitelist(bot *pluginsdk.BotClient, msg *pluginsd
 		p.config.RemoveFromWhitelist(isGroup, id)
 	}
 	if err := p.config.Save(p.configPath()); err != nil {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 保存权限配置失败: %v", err)))
+		p.replyText(bot, msg, fmt.Sprintf("❌ 保存权限配置失败: %v", err))
 		return
 	}
 
@@ -511,7 +529,7 @@ func (p *ShowMeJMPlugin) updateWhitelist(bot *pluginsdk.BotClient, msg *pluginsd
 	if !allow {
 		action = "移除"
 	}
-	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ 已%s%s权限: %d", action, targetName, id)))
+	p.replyText(bot, msg, fmt.Sprintf("✅ 已%s%s权限: %d", action, targetName, id))
 }
 
 func (p *ShowMeJMPlugin) parseWhitelistTarget(msg *pluginsdk.Message, args []string) (bool, int64, error) {
@@ -544,16 +562,16 @@ func (p *ShowMeJMPlugin) parseWhitelistTarget(msg *pluginsdk.Message, args []str
 
 func (p *ShowMeJMPlugin) showWhitelist(bot *pluginsdk.BotClient, msg *pluginsdk.Message) {
 	if !p.isAdmin(msg) {
-		bot.Reply(msg, pluginsdk.Text("抱歉，只有管理员可以查看权限"))
+		p.replyText(bot, msg, "抱歉，只有管理员可以查看权限")
 		return
 	}
 
-	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf(
+	p.replyText(bot, msg, fmt.Sprintf(
 		"🛡️ 当前权限配置\n账号白名单: %s\n群白名单: %s\n管理员: %s",
 		formatIDList(p.config.PersonWhitelist),
 		formatIDList(p.config.GroupWhitelist),
 		formatIDList(p.config.AdminUsers),
-	)))
+	))
 }
 
 func formatIDList(ids []int64) string {
@@ -609,7 +627,7 @@ func (p *ShowMeJMPlugin) uploadPDF(bot *pluginsdk.BotClient, msg *pluginsdk.Mess
 // searchComic searches for comics
 func (p *ShowMeJMPlugin) searchComic(ctx context.Context, bot *pluginsdk.BotClient, msg *pluginsdk.Message, args []string) {
 	if len(args) == 0 {
-		bot.Reply(msg, pluginsdk.Text("📝 搜索帮助:\n格式: 查jm [关键词/标签] [页码(默认第一页)]\n例: 查jm 鸣潮,+无修正 2\n提示: 请使用中英文任意逗号隔开每个关键词/标签"))
+		p.replyText(bot, msg, "📝 搜索帮助:\n格式: 查jm [关键词/标签] [页码(默认第一页)]\n例: 查jm 鸣潮,+无修正 2\n提示: 请使用中英文任意逗号隔开每个关键词/标签")
 		return
 	}
 
@@ -624,16 +642,16 @@ func (p *ShowMeJMPlugin) searchComic(ctx context.Context, bot *pluginsdk.BotClie
 	// Convert commas to spaces for search
 	tags := regexp.MustCompile(`[，,]+`).ReplaceAllString(query, " ")
 
-	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("🔍 正在搜索: %s (第%d页)...", query, page)))
+	p.replyText(bot, msg, fmt.Sprintf("🔍 正在搜索: %s (第%d页)...", query, page))
 
 	results, err := p.client.SearchComics(tags, page)
 	if err != nil {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 搜索失败: %v", err)))
+		p.replyText(bot, msg, fmt.Sprintf("❌ 搜索失败: %v", err))
 		return
 	}
 
 	if len(results) == 0 {
-		bot.Reply(msg, pluginsdk.Text("😕 未找到相关漫画"))
+		p.replyText(bot, msg, "😕 未找到相关漫画")
 		return
 	}
 
@@ -647,7 +665,7 @@ func (p *ShowMeJMPlugin) searchComic(ctx context.Context, bot *pluginsdk.BotClie
 	sb.WriteString("━━━━━━━━━━━━━━━━\n")
 	sb.WriteString("💡 对我说 jm [jm号] 进行下载~")
 
-	bot.Reply(msg, pluginsdk.Text(sb.String()))
+	p.replyText(bot, msg, sb.String())
 }
 
 // randomComic downloads a random comic
@@ -656,28 +674,28 @@ func (p *ShowMeJMPlugin) randomComic(ctx context.Context, bot *pluginsdk.BotClie
 	if len(args) > 0 {
 		query = args[0]
 		query = regexp.MustCompile(`[，,]+`).ReplaceAllString(query, " ")
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("🎲 正在搜索关键词为 %s 的随机本子，请稍候...", query)))
+		p.replyText(bot, msg, fmt.Sprintf("🎲 正在搜索关键词为 %s 的随机本子，请稍候...", query))
 	} else {
-		bot.Reply(msg, pluginsdk.Text("🎲 正在搜索随机本子，请稍候..."))
+		p.replyText(bot, msg, "🎲 正在搜索随机本子，请稍候...")
 	}
 
 	comic, err := p.client.GetRandomComic(query)
 	if err != nil {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 获取随机本子失败: %v", err)))
+		p.replyText(bot, msg, fmt.Sprintf("❌ 获取随机本子失败: %v", err))
 		return
 	}
 
-	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("🎯 你今天的幸运本子是:\n[JM%s] %s\n\n即将开始下载...", comic.ID, comic.Title)))
+	p.replyText(bot, msg, fmt.Sprintf("🎯 你今天的幸运本子是:\n[JM%s] %s\n\n即将开始下载...", comic.ID, comic.Title))
 	p.downloadComic(ctx, bot, msg, comic.ID)
 }
 
 // updateDomains checks and updates available domains
 func (p *ShowMeJMPlugin) updateDomains(ctx context.Context, bot *pluginsdk.BotClient, msg *pluginsdk.Message) {
-	bot.Reply(msg, pluginsdk.Text("🌐 正在检查域名连接状态，请稍后..."))
+	p.replyText(bot, msg, "🌐 正在检查域名连接状态，请稍后...")
 
 	domains, err := p.client.CheckDomains()
 	if err != nil {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 检查域名失败: %v", err)))
+		p.replyText(bot, msg, fmt.Sprintf("❌ 检查域名失败: %v", err))
 		return
 	}
 
@@ -695,20 +713,20 @@ func (p *ShowMeJMPlugin) updateDomains(ctx context.Context, bot *pluginsdk.BotCl
 		sb.WriteString(fmt.Sprintf("%s %s\n", icon, domain))
 	}
 
-	bot.Reply(msg, pluginsdk.Text(sb.String()))
+	p.replyText(bot, msg, sb.String())
 
 	if len(usableDomains) > 0 {
 		p.client.UpdateDomains(usableDomains)
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ 已将 %d 个可用域名添加到配置中\n\n💡 如遇网络问题下载失败，对我说 'jm清空域名' 来清除配置", len(usableDomains))))
+		p.replyText(bot, msg, fmt.Sprintf("✅ 已将 %d 个可用域名添加到配置中\n\n💡 如遇网络问题下载失败，对我说 'jm清空域名' 来清除配置", len(usableDomains)))
 	} else {
-		bot.Reply(msg, pluginsdk.Text("⚠️ 未找到可用域名，请稍后重试"))
+		p.replyText(bot, msg, "⚠️ 未找到可用域名，请稍后重试")
 	}
 }
 
 // clearDomains clears configured domains
 func (p *ShowMeJMPlugin) clearDomains(ctx context.Context, bot *pluginsdk.BotClient, msg *pluginsdk.Message) {
 	p.client.ClearDomains()
-	bot.Reply(msg, pluginsdk.Text("🗑️ 已清空配置中的域名\n\n💡 插件将自动寻找可用域名\n对我说 'jm更新域名' 可以手动检测并添加可用域名"))
+	p.replyText(bot, msg, "🗑️ 已清空配置中的域名\n\n💡 插件将自动寻找可用域名\n对我说 'jm更新域名' 可以手动检测并添加可用域名")
 }
 
 // setDomain manually sets a specific domain
@@ -719,18 +737,18 @@ func (p *ShowMeJMPlugin) setDomain(ctx context.Context, bot *pluginsdk.BotClient
 	domain = strings.TrimPrefix(domain, "http://")
 	domain = strings.TrimSuffix(domain, "/")
 
-	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("🌐 正在测试域名 %s ...", domain)))
+	p.replyText(bot, msg, fmt.Sprintf("🌐 正在测试域名 %s ...", domain))
 
 	// Test the domain first
 	status := p.client.TestDomain(domain)
 	if status != "ok" {
-		bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("❌ 域名 %s 连接失败，请检查域名是否正确", domain)))
+		p.replyText(bot, msg, fmt.Sprintf("❌ 域名 %s 连接失败，请检查域名是否正确", domain))
 		return
 	}
 
 	// Update domain
 	p.client.UpdateDomains([]string{domain})
-	bot.Reply(msg, pluginsdk.Text(fmt.Sprintf("✅ 已将域名设置为: %s", domain)))
+	p.replyText(bot, msg, fmt.Sprintf("✅ 已将域名设置为: %s", domain))
 }
 
 func main() {
